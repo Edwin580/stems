@@ -1,7 +1,14 @@
-// Offline app shell: network-first for navigations, cache-first for built
-// assets (hashed filenames never change). Models are cached separately by the
-// separation worker; audio never touches this cache.
-const CACHE = 'stems-shell-v1';
+// stems service worker.
+//
+// 1. Offline app shell: network-first for navigations, cache-first for built
+//    assets (hashed filenames never change). Models are cached separately by
+//    the separation worker; audio never touches this cache.
+// 2. Cross-origin isolation on static hosts that can't set headers (GitHub
+//    Pages): every same-origin response gets COOP/COEP/CORP headers, which
+//    unlocks SharedArrayBuffer and multi-threaded WASM. The page reloads once
+//    after the worker first takes control (see src/ui/main.ts).
+const CACHE = 'stems-shell-v2';
+const SCOPE = new URL(self.registration.scope);
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './index.html', './manifest.webmanifest', './icon.svg'])).then(() => self.skipWaiting()));
@@ -11,16 +18,31 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith('stems-shell-') && k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
 });
 
+/** Copy a response, adding cross-origin isolation headers. */
+function isolate(res) {
+  if (!res || res.status === 0 || res.type === 'opaqueredirect') return res;
+  const headers = new Headers(res.headers);
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+  headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+  headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== self.location.origin) return;
+  // A production worker at the site root must not serve PR previews (and vice versa).
+  const rel = url.pathname.slice(SCOPE.pathname.length);
+  if (!url.pathname.startsWith(SCOPE.pathname) || rel.startsWith('previews/')) return;
   if (req.mode === 'navigate') {
     e.respondWith(fetch(req).then((res) => {
-      const copy = res.clone();
-      caches.open(CACHE).then((c) => c.put(req, copy));
-      return res;
-    }).catch(() => caches.match(req).then((r) => r || caches.match('./index.html'))));
+      if (res.ok) {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(req, copy));
+      }
+      return isolate(res);
+    }).catch(() => caches.match(req).then((r) => isolate(r)).then((r) => r || caches.match('./index.html').then(isolate))));
     return;
   }
   e.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => {
@@ -29,5 +51,5 @@ self.addEventListener('fetch', (e) => {
       caches.open(CACHE).then((c) => c.put(req, copy));
     }
     return res;
-  })));
+  })).then(isolate));
 });

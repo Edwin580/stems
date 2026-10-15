@@ -497,7 +497,26 @@ window.addEventListener('beforeinstallprompt', (e) => {
 });
 $('install').addEventListener('click', async () => { await installPrompt?.prompt(); show('install', false); });
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  navigator.serviceWorker.register('./sw.js').then(() => navigator.serviceWorker.ready).then(() => {
+    // Hosts without COOP/COEP headers (GitHub Pages): the service worker adds
+    // them, but only to documents it serves, so reload once after it takes control.
+    if (!crossOriginIsolated && navigator.serviceWorker.controller) {
+      try {
+        if (!sessionStorage.getItem('stems.coiReload')) {
+          sessionStorage.setItem('stems.coiReload', '1');
+          if (!player?.source) location.reload();
+        }
+      } catch { /* storage blocked: stay non-isolated */ }
+    }
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    try {
+      if (!crossOriginIsolated && !sessionStorage.getItem('stems.coiReload') && !player?.source) {
+        sessionStorage.setItem('stems.coiReload', '1');
+        location.reload();
+      }
+    } catch { /* ignore */ }
+  });
 }
 
 // ---- Render loop -------------------------------------------------------------------
