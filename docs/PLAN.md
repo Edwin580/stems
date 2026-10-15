@@ -104,7 +104,9 @@ Measured on the synthetic song, as SDR against the true stems:
 | Vocals | 4.1 dB | **22.8 dB** |
 | Other | 2.7 dB | **21.8 dB** |
 
-The HTDemucs path was checked against the real model with onnxruntime-node, and in the browser with onnxruntime-web.
+The table is from onnxruntime-node on a 20 s excerpt. In the browser (onnxruntime-web, WASM with 4 threads, in a worker, headless Chromium), a 15 s excerpt that includes a section boundary scored 7.2, 8.0, 25.7 and 19.4 dB for drums, bass, vocals and other. It ran at about 13 s per 7.8 s segment.
+
+WebGPU is used only when a hardware adapter is present. Software adapters such as SwiftShader or llvmpipe, and fallback adapters, are skipped. WebGPU session creation is also given a timeout, because it can hang instead of failing.
 
 ### Phase 4: product ✅
 
@@ -144,7 +146,7 @@ Browser end-to-end checks were run with Playwright and headless Chromium:
 - sleep timer
 - share link applied on a fresh page
 - cache hit on reload
-- HTDemucs in the browser via onnxruntime-web
+- HTDemucs in the browser via onnxruntime-web (WASM path; the WebGPU path is untested here because the sandbox has no GPU)
 
 ## 6. Known limitations
 

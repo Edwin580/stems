@@ -135,7 +135,7 @@ export async function separateHtdemucs(
   channels: Float32Array[],
   sampleRate: number,
   runner: DemucsRunner,
-  onProgress: (f: number) => void = () => {},
+  onProgress: (f: number, detail?: string) => void = () => {},
 ): Promise<Stems> {
   const stereo = [channels[0], channels[1] ?? channels[0]].map((c) => resample(c, sampleRate, DEMUCS_SR));
   const len = stereo[0].length;
@@ -158,12 +158,13 @@ export async function separateHtdemucs(
   for (let o = 0; o < len; o += stride) { offsets.push(o); if (o + SEGMENT >= len) break; }
   for (let n = 0; n < offsets.length; n++) {
     const o = offsets[n];
+    onProgress(n / offsets.length, `segment ${n + 1} of ${offsets.length}`);
     const chunk = norm.map((c) => { const x = new Float32Array(SEGMENT); x.set(c.subarray(o, Math.min(len, o + SEGMENT))); return x; });
     const out = await runSegment(runner, chunk);
     const valid = Math.min(SEGMENT, len - o);
     for (let i = 0; i < valid; i++) wsum[o + i] += weight[i];
     out.forEach((src, s) => src.forEach((x, c) => { const a = acc[s][c]; for (let i = 0; i < valid; i++) a[o + i] += weight[i] * x[i]; }));
-    onProgress((n + 1) / offsets.length);
+    onProgress((n + 1) / offsets.length, `segment ${n + 1} of ${offsets.length}`);
   }
   const back = acc.map((src) => src.map((a) => {
     for (let i = 0; i < len; i++) a[i] = (a[i] / (wsum[i] || 1)) * std + mean / 4;
