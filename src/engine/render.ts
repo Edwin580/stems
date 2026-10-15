@@ -1,6 +1,6 @@
 import type { LoopCandidate } from './loops';
 import type { Planner } from './planner';
-import { Splicer, type Jump } from './splicer';
+import type { Jump } from './splicer';
 import { StemEngine } from './stemengine';
 
 /**
@@ -9,14 +9,16 @@ import { StemEngine } from './stemengine';
  * start: the first cycle already equals the steady state (plain audio from
  * `to`, ending in the seam crossfade), so cycle N's tail flows into N+1's head.
  */
-export function bakeLoop(channels: Float32Array[], loop: LoopCandidate, sampleRate: number): Float32Array[] {
+export function bakeLoop(src: RenderSources | Float32Array[], loop: LoopCandidate, sampleRate: number): Float32Array[] {
+  const rs: RenderSources = Array.isArray(src) ? { groups: [src], names: ['mix'] } : src;
   const L = loop.endSample - loop.startSample;
-  const sp = new Splicer(channels, sampleRate);
-  sp.setRunning(true);
-  sp.pos = loop.startSample;
-  sp.enqueue({ id: 1, at: loop.endSample, to: loop.startSample, fade: Math.min(loop.fade, L >> 1), rho: loop.rho, drift: loop.drift });
-  const outs = channels.map(() => new Float32Array(L));
-  sp.render(outs, L);
+  const eng = new StemEngine(rs.groups, rs.names, sampleRate);
+  rs.gains?.forEach((g, i) => eng.setGain(i, g, true));
+  eng.setRunning(true);
+  eng.pos = loop.startSample;
+  eng.enqueue({ id: 1, at: loop.endSample, to: loop.startSample, fade: Math.min(loop.fade, L >> 1), rho: loop.rho, drift: loop.drift });
+  const outs = [new Float32Array(L), new Float32Array(L)];
+  eng.render(outs, L);
   return outs;
 }
 

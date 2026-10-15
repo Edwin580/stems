@@ -1,5 +1,5 @@
 import { alignSeam, type AudioSource } from './align';
-import { FFT } from './fft';
+import { createFFT, type FFTLike } from './wasm-fft';
 
 /**
  * Everything the engine decides about one splice, beyond "from here to there".
@@ -72,12 +72,12 @@ export function transients(x: Float32Array, sampleRate: number, riseDb = 6): num
 }
 
 const BANDS = 16;
-let bandFft: FFT | null = null;
+let bandFft: FFTLike | null = null;
 
 /** Log band energies (dB) of a 2048-sample Hann window, 60 Hz – 12 kHz. */
 function bandEnergies(x: Float32Array, sampleRate: number): Float64Array {
   const N = 2048;
-  bandFft ??= new FFT(N);
+  bandFft ??= createFFT(N);
   const re = new Float64Array(N), im = new Float64Array(N);
   for (let i = 0; i < N; i++) re[i] = (x[i] ?? 0) * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N));
   bandFft.transform(re, im);

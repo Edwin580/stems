@@ -1,162 +1,157 @@
-# stems: plan
+# stems: plan and status
 
 Upload a song and it plays forever. A listener should not be able to hear where it loops.
 
-This document covers what we are building, why the Infinite Jukebox approach fell short, how the custom engine works, what the MVP includes, and what comes after it.
+This document covers why the Infinite Jukebox approach fell short, how the custom engine works, and the status of every roadmap item. All five phases are implemented. Where an item was built differently from the original plan, its entry says how.
 
 ---
 
 ## 1. Why the Infinite Jukebox sounded wrong
 
-The Infinite Jukebox (2012) proved people want this. Its seams were still easy to hear, for these reasons:
-
 | Problem | Cause | What stems does |
 |---|---|---|
-| Audible hiccups at jumps | It cut at beat boundaries taken from a remote analysis service. Those boundaries were accurate to tens of milliseconds, and the cuts had little or no crossfade, so transients doubled or dropped and bass waveforms clicked out of phase. | Beats are measured locally with a short onset window and bias correction. Every seam is then aligned at sample level by cross-correlation, and a crossfade law chosen from that correlation is applied. |
-| Jumps that land "wrong" | It judged similarity one beat at a time. Two single beats can match while the music around them does not. | Each seam is scored over ±4 beats of context on both sides, weighted toward the seam. |
-| Jumps that shift the downbeat | It had no model of bars. | The engine estimates meter and downbeat and penalises jumps that change the position within the bar. By default jumps only happen on bar lines. |
-| Dead ends and running off the end | Jumps were random, with special cases near the end of the track. | The engine computes the strongly connected core of the beat graph. Inside the core every beat can reach every other, so playback never runs out. |
-| Repetitive ping-ponging | It picked jumps by plain random choice. | Jump timing follows a rising hazard function, jump choice is weighted by quality, and recently used landing spots are avoided for a while. |
-| Stopped working | It depended on the Echo Nest API, which shut down in 2016. | Everything runs in the browser, and the audio never leaves the device. |
-| No clean single loop | It had only a random-walk mode. | **Perfect loop** mode finds verified single-seam loops and can export a seamless WAV that loops in any player or DAW. |
+| Audible hiccups at jumps | Beat boundaries from a remote service were tens of milliseconds off, and cuts had little or no crossfade. | Beats are tracked locally with a short onset window, bias correction and local tempo. Every seam is aligned at sample level by cross-correlation and uses a crossfade law chosen from that correlation. Fades adapt so they never split a drum hit, and varispeed follows tempo differences. |
+| Jumps that land wrong | It judged similarity one beat at a time. | Each seam is scored over ±4 beats of context, then checked at sample level for correlation, spectral match and loudness. |
+| Jumps that shift the downbeat | It had no bar model. | Meter and downbeats come from several cues. Jumps that change the position in the bar are penalised. Jumps happen on bar lines and prefer phrase boundaries. |
+| Jumps in the middle of a vocal line | It had no notion of sources. | With stems, seams avoid moments where the vocal stem is active. |
+| Dead ends | Jumps were random, with special cases near the end. | The strongly connected core of the beat graph guarantees that playback can never run out. |
+| Stopped working | It depended on the Echo Nest API, which shut down in 2016. | Everything runs in the browser and the audio never leaves the device. |
 
 ## 2. What "perfect" means here
 
 A seam is inaudible only when all of these hold:
 
-1. **Musical context matches.** Harmony, timbre, rhythm pattern and loudness are the same before and after the seam, over several beats.
-2. **Metric position matches.** The jump keeps the position within the bar, and ideally within the phrase.
-3. **Waveforms are in phase.** At the sample level the incoming audio is time-aligned with the outgoing audio, so bass and sustained notes do not cancel or click.
-4. **The crossfade law fits the signal.** Correlated material needs a constant-gain fade, and uncorrelated material needs equal power. Using the wrong one causes a level bump or dip.
-5. **The fade finishes on the beat.** The incoming beat's attack plays untouched, which masks the seam.
-6. **Playback cannot get stuck.** There are no dead ends and no forced bad jumps.
-
-The engine is built around these six conditions.
+1. **Musical context matches:** harmony, timbre, rhythm and loudness, over several beats on both sides.
+2. **Metric position matches:** bar position, and ideally phrase position.
+3. **Waveforms are in phase** at the sample level.
+4. **The crossfade law fits the signal:** constant-gain for correlated material, equal-power for uncorrelated.
+5. **The fade finishes on the beat** and never cuts through a transient.
+6. **Tempo and level match** across the seam.
+7. **No voice is caught mid-phrase.**
+8. **Playback cannot get stuck.**
 
 ## 3. Architecture
 
 ```
- File ──decodeAudioData──► PCM (playback rate, stereo)
-                              │
-          ┌───────────────────┴─────────────────────┐
-          ▼ (Web Worker)                            ▼ (main thread)
-   ANALYSIS PIPELINE                           coarse mono (÷4)
-   decimate → 22 kHz                                │
-   STFT 2048/512 → log-mel, MFCC, chroma, loudness │
-   STFT 1024/256 → onset envelope (bass-weighted)  │
-   tempo (autocorr + prior + metrical support)     │
-   beats (Ellis DP) + time-domain bias correction  │
-   beat-sync features + meter/downbeat             │
-   distance matrix D → transition matrix T         │
-   candidate jump edges                            │
-          │                                         │
-          └──────────────► PLANNER ◄────────────────┘
-                 infinite core (Tarjan SCC) under the user's strictness
-                 endless walk / loop mode, seeded RNG
-                 alignSeam(): coarse+fine normalised cross-correlation
-                          │  Jump{at, to, fade, rho}
-                          ▼
-                 AudioWorklet: SPLICER (pure TS, shared with export/tests)
-                 read head + jump queue, correlation-aware crossfade,
-                 click-free play/pause/seek
+ File ─decode─► PCM (SharedArrayBuffer when cross-origin isolated)
+   │                │
+   │ SHA-256        ├─► AudioWorklet: StemEngine (plays immediately, linear until seams arrive)
+   ▼                │
+ IndexedDB cache ◄──┼─► Analysis worker
+                    │     decimate → STFTs (WASM SIMD FFT) → onsets → tempo → local tempo curve
+                    │     → DP beats → bias fix → beat features (+ bass chroma)
+                    │     → D (beat distances) → multi-cue meter → phrase novelty
+                    │     → T (context + bar + phrase [+ vocal] cost) → edges
+                    │
+                    ├─► Separation worker (optional)
+                    │     DSP: streaming HPSS + bass + centre-coherence masks (sum to unity)
+                    │     ML:  HTDemucs ONNX via onnxruntime-web (WebGPU → WASM), chunked OLA
+                    │
+                    └─► Planner (main thread)
+                          infinite core (Tarjan SCC), endless walk with phrase-biased hazard,
+                          perfect-loop mode, render-to-length DP
+                          buildSeam(): align → adaptive fade → varispeed → spectral check → loudness
+                                │ Jump{at, to, fade, rho, drift, gainDb}
+                                ▼
+                          StemEngine: one Splicer per stem, per-stem fade laws,
+                          mixer gains, stem lock to a loop on the downbeat grid
 ```
 
-Every piece of DSP is written from scratch in TypeScript: the FFT, mel filterbank, chroma, MFCC, beat tracker, similarity, graph, aligner, splicer and WAV encoder. The project has no runtime dependencies.
+All DSP is written from scratch:
 
-### 3.1 Analysis (`src/engine/analyze.ts`)
+- the FFT, in JavaScript and as AssemblyScript compiled to WASM SIMD
+- the STFT, mel and chroma features, MFCC, onset detection, tempo, local tempo and the dynamic-programming beat tracker
+- self-similarity, Foote novelty and meter
+- the transition matrix, SCC, aligner, seam builder and splicer
+- the HPSS separator, the resampler, the Demucs STFT and ISTFT conventions, and the WAV encoder with metadata chunks
 
-| Stage | Method | Notes |
+The only runtime dependency is onnxruntime-web, which is loaded lazily and only when HTDemucs is used.
+
+## 4. Status
+
+### Phase 1: MVP ✅
+This phase covers upload, analysis, endless mode, perfect-loop mode, the song map, and seamless loop and endless WAV export.
+
+### Phase 2: seam quality ✅
+
+| Item | Implementation | Where |
 |---|---|---|
-| Resample | Windowed-sinc decimation to about 22 kHz | Used for analysis only. Playback stays at full rate. |
-| Feature STFT | 2048-sample Hann window, hop 512, two real frames per complex FFT | Feeds 40-band log-mel, 13 MFCCs, 12-bin energy chroma (55 Hz–2.5 kHz) and loudness. |
-| Onset envelope | Separate 1024/256 STFT, spectral flux on log-mel with the low bands weighted ×3 | A short window avoids "seeing" attacks early. The bass weighting stops hi-hats from pulling the tracker onto off-beats. |
-| Tempo | Onset autocorrelation × log-normal prior around 120 BPM, plus 2× metrical support | Autocorrelation is computed out to 2× the longest lag so slow tempos are not penalised. This fixed 93→186 BPM octave errors. |
-| Beats | Ellis dynamic-programming tracker (tightness 100), parabolic sub-frame refinement | |
-| Beat bias | Median offset to the peak energy rise in a time-domain envelope with 1.5 ms hop | Removes the systematic early bias of STFT onsets. Measured within about 5 ms on test material. |
-| Beat features | Chroma for the whole beat, MFCC 1–12 for each half of the beat, loudness per half | Splitting into halves captures rhythm shape inside the beat. |
-| Meter | 3 vs 4 and downbeat phase from z-scored onset strength plus harmonic change | 4/4 is preferred unless 3/4 wins clearly. |
-| D | 2·(1−cos chroma) + ‖Δmfcc‖/√48 + Δloudness/12, normalised to median 1 | |
-| T(i→j) | Weighted mean of D(i+1+d, j+d), d ∈ [−4, 3], weights e^(−\|d+½\|/4), + 0.6 if bar position changes | Jumps shorter than 8 beats are excluded because they sound like stutters. |
-| Edges | Up to 8 per beat under a loose threshold (5th percentile, or 0.55), with near-duplicates suppressed | The planner tightens this set to the user's strictness setting. |
+| Phrase awareness | Foote checkerboard novelty on the beat distance matrix with a 4-bar kernel, then a logistic per-downbeat phrase-start score. The score enters the transition cost (`phraseWeight · \|phrase(i+1) − phrase(j)\|`) and the jump hazard, which is boosted at phrase ends. The Phrase preference slider controls it. | `structure.ts`, `similarity.ts`, `planner.ts` |
+| Better downbeats | **Built differently from the plan:** there is no learned model, because no labelled training data was available here. Instead, meter and phase come from a z-scored, weighted vote of four cues: onset strength, harmonic change, bass-note change (40–250 Hz chroma) and bar-scale structural novelty. | `structure.ts` |
+| Tempo-varying music | Local beat period from windowed autocorrelation (8 s window, 1 s hop, ±20%, median-smoothed). The DP tracker uses the local period per frame. A 110→126 BPM glide is tracked with a median error under 20 ms. | `beats.ts` |
+| Micro time-stretch at the seam | Varispeed over the crossfade. The incoming side is read at the ratio of the local beat periods (clamped to ±2%), with linear interpolation, and still lands exactly on the target sample. | `seam.ts`, `splicer.ts` |
+| Spectral seam check | 16-band log spectra of what would have played compared with what will play. Seams above 8 dB mean difference are rejected unless forced, and the difference is added to the cost of loop candidates. | `seam.ts` |
+| Loudness matching | RMS over 0.4 s after the seam on both sides. A difference above 1 dB triggers a ±6 dB correction on the incoming side that ramps back to unity over 3 s. Loops don't use it, because they repeat verbatim. | `seam.ts`, `splicer.ts` |
+| Adaptive fade length | Transient detection (energy rise over ~4 ms). The fade is the longest one, up to 2× the requested length, whose window holds no transient on either side, so a drum hit is never half-faded. | `seam.ts` |
 
-### 3.2 Seam alignment (`src/engine/align.ts`)
+### Phase 3: stems ✅
 
-For a jump that leaves at sample `at` and lands at `to`, the aligner searches lags within ±25 ms. It does a coarse pass on box-filtered mono at 1/4 rate, then a fine pass at full rate within ±8 samples of the coarse result. Each pass maximises normalised cross-correlation over a window covering the crossfade and 30 ms on each side. The aligner returns the refined landing sample and the correlation `rho`. The planner rejects seams with `rho < 0.2` unless a jump is forced.
+| Item | Implementation |
+|---|---|
+| In-browser separation | **Two backends.** (1) A built-in DSP separator. It runs a streaming STFT (2048/1024, √Hann) with median-filter HPSS (branchless 9-tap median network), a low-band mask for bass, and inter-channel coherence ⁸ × 150 Hz–9 kHz for vocals. "Other" is the time-domain residual, so the stems sum back to the mix exactly. It runs at about 25× real time. Mono files are detected, and no vocal estimate is attempted for them. (2) **HTDemucs** through an ONNX export run with onnxruntime-web (WebGPU, falling back to multi-threaded WASM). Demucs' own `_spec`, `_magnitude`, `_mask` and `_ispec` steps, and its torch.stft and torch.istft conventions, are reproduced exactly. Inference runs on 7.8 s segments with 25% overlap and triangular weights, with global normalisation and 44.1 kHz resampling. The model is downloaded once and kept in Cache Storage, and ML stems are cached in IndexedDB. |
+| Per-stem seams | A vocal-activity penalty (vocal-to-mix energy ratio in a ±120 ms window around each beat) is added to the seam cost at both ends of a jump. Turning on **Vocal-aware seams** re-scores the transition matrix from the stored distances. |
+| Per-stem crossfade laws | Every stem's fade ends on the same landing sample. Drums cut in 12 ms or less. "Other" (pads and keys) fades over twice the requested length, up to 200 ms. Bass and vocals use the seam's adaptive fade. |
+| Stem mixer | Volume, mute and solo per stem, with presets (Full mix, Instrumental, A cappella, Drums + bass). Gains are smoothed in the worklet over about 20 ms. Exports use the current mix. |
+| Cross-section mashups | **Stem lock:** a locked stem leaves the main path, enters the selected perfect loop on the next downbeat, and keeps cycling while the other stems wander. On unlock it crossfades back onto the leader's exact position, and the transition waits until no seam is due. The engine never allows every stem to be locked. |
+| Live handover | Separation finishes while the song plays. The engine then swaps the single mix source for four stems in the middle of a block, with no discontinuity, because the stems sum to the mix. |
 
-### 3.3 Splicer (`src/engine/splicer.ts`)
+Measured on the synthetic song, as SDR against the true stems:
 
-The splicer is a read head plus a queue of jumps. A crossfade occupies `[at − fade, at)`, so it ends exactly on the landing point and the new beat's transient plays clean. The gains use raised-cosine shapes normalised by `1/√(x² + y² + 2ρxy)`:
+| Stem | DSP | HTDemucs |
+|---|---|---|
+| Drums | 3.2 dB | **14.5 dB** |
+| Bass | 4.4 dB | **16.0 dB** |
+| Vocals | 4.1 dB | **22.8 dB** |
+| Other | 2.7 dB | **21.8 dB** |
 
-- When ρ = 1 the fade is constant-gain, because correlated signals sum linearly.
-- When ρ = 0 the fade is equal-power.
-- Values in between interpolate correctly.
+The HTDemucs path was checked against the real model with onnxruntime-node, and in the browser with onnxruntime-web.
 
-Play, pause and seek all use ramps or crossfades, so nothing clicks. The same class runs in the AudioWorklet, in offline WAV rendering and in unit tests. What you hear is exactly what gets exported and tested.
+### Phase 4: product ✅
 
-### 3.4 Planner (`src/engine/planner.ts`)
+| Item | Implementation |
+|---|---|
+| Analysis cache | IndexedDB, keyed by engine version, the SHA-256 of the file and the sample rate. Re-opening a file skips analysis, and the UI shows "analysis from cache". |
+| Extend to N minutes with a real ending | The planner wanders until the remaining time is within 3 song-lengths. An exact DP over (beat, beats remaining) then uses natural steps and planned seams at bar ends to reach the song's own outro. Because seams preserve bar phase, the result snaps to the nearest reachable length in whole bars. If no path exists, it falls back to a 2 s fade. |
+| Sampler and DAW markers | Loop exports carry a `smpl` chunk with a forward loop over the whole file. Endless renders carry `cue ` and `LIST/adtl/labl` markers at every seam. |
+| Media Session, background playback, sleep timer | Media Session metadata and play/pause/stop handlers. The sleep timer (15, 30, 60 or 90 minutes) fades out over 20 s and then pauses. AudioWorklet playback keeps running in background tabs. |
+| PWA | Web app manifest, icons, an offline app-shell service worker, an install button, and `file_handlers` so the installed app can open audio files from the OS. |
+| Share links | `#share=` with base64url JSON holding mode, loop, settings, stem gains and locks, plus a 16-hex-character file hash. No audio is included. The recipient opens the same file, and the link applies only if the hashes match. Sample positions are rescaled across sample rates. The mix is applied once stems exist. |
 
-- **Infinite core.** The planner filters edges by strictness and runs Tarjan's SCC over the natural edges (i→i+1) plus the jump edges. If the core comes out too small, it relaxes the threshold automatically and reports that in the UI. Beats outside the core (intro and outro) play once. At the edge of the core a jump is forced.
-- **Endless mode.** Jump timing uses a linearly rising hazard, calibrated so the mean spacing equals the "every N bars" setting. With bar-lock on, jumps happen only at bar ends. The planner picks an edge by softmax over cost (temperature 0.08) and avoids landing within 8 beats of the last 6 landings.
-- **Loop mode.** One verified seam, repeated. `findLoops` ranks every (start, end) pair of 8 bars or more by T with a mild bias toward longer loops. It suppresses near-duplicates, keeps at most two loops of each length, verifies every candidate with `alignSeam`, and re-ranks with the correlation folded in.
-- **Seeded RNG** (mulberry32) makes renders reproducible.
+### Phase 5: performance ✅
 
-### 3.5 Export (`src/engine/render.ts`)
+| Item | Implementation | Result |
+|---|---|---|
+| WASM SIMD FFT | AssemblyScript radix-2 with an f32x4 butterfly and a fused radix-4 first pass, embedded as base64 so workers instantiate it synchronously. It falls back to JS when SIMD is unavailable. `npm run build:wasm` regenerates it. | 3.4–3.8× faster than JS per 2048-point FFT. A 5-minute track analyses in 2.8 s, down from 5.4 s. **The < 1 s target was not reached:** the remaining time is in feature loops and the O(n²) matrices, not the FFT. |
+| Play before analysis finishes | Playback starts as soon as the file is decoded. Seams switch on when analysis completes, and the planner picks up from the live playhead. **Built differently from the plan:** this replaces incremental streaming analysis, which isn't needed because the first seam is always several bars in. | Time to sound is about the decode time. |
+| SharedArrayBuffer PCM | COOP/COEP headers in Vite dev and preview, and `public/_headers` for Netlify or Cloudflare. When `crossOriginIsolated` is true, PCM and stems live in SharedArrayBuffers and are shared with the worklet and workers without copying. This also enables multi-threaded ONNX WASM. Otherwise buffers are copied. | Halves resident memory for PCM and stems. |
 
-- **Seamless loop WAV.** One cycle of the loop, with the same crossfade the live engine applies baked into its tail. The file therefore loops gaplessly in any looping player, sampler or DAW.
-- **Endless render.** N minutes of the planner's path, rendered offline with the same Splicer. It ends with a 2 s fade.
+## 5. Testing
 
-## 4. MVP scope (built)
+The suite has 47 tests in `npm test`:
 
-- [x] Drag-and-drop or file-picker upload of any format the browser can decode. A built-in synthesised demo track is included.
-- [x] Full local analysis in a Web Worker with a progress bar. A 5-minute song takes about 5 s.
-- [x] Endless mode with controls for jump spacing, seam strictness, crossfade length and bar-lock.
-- [x] Perfect-loop mode with ranked loops. Each shows quality, length and phase match, and has **Loop this**, **Hear seam** (seeks to 4 s before the seam) and **WAV** export.
-- [x] A song map showing the waveform (dimmed outside the infinite core), the beat and bar grid, jump arcs coloured by quality, the next planned jump (dashed), a flash when a jump happens, and the playhead. Click to seek, snapped to beats.
-- [x] Listening time, current position and a count of seams crossed.
-- [x] Endless WAV render of 1–60 minutes.
-- [x] Light and dark themes, mobile layout, and space bar for play/pause.
-- [x] Tests (Vitest) against synthetic songs with known ground truth at two tempos and sample rates:
-  - FFT against a reference DFT, and the crossfade law
-  - SCC correctness
-  - tempo within 2%, median beat error under 20 ms, meter and downbeat phase
-  - more than 90% of good edges bar-aligned
-  - best loop with ρ > 0.8
-  - endless render that never ends, with no click spikes
-  - per-seam high-frequency energy no higher than the source's (a mutation check confirms this test fails on misaligned hard cuts)
-  - baked loop that wraps cleanly, and the WAV byte size
+- **engine:** FFT, crossfade law, SCC, tempo, beats, meter, edges, loops, endless render, seam high-frequency energy, baked loop. Runs at two tempos and sample rates.
+- **quality:** tempo glide, phrase scores, adaptive fade, varispeed landing, loudness ramp, spectral check.
+- **stems:** exact reconstruction, SDR, mono detection, vocal penalty, re-scoring, StemEngine parity, fade laws, mute, lock and unlock, live source swap, Demucs STFT round trip, chunked overlap-add with an oracle runner, resampler.
+- **product:** render to length with a real ending, WAV `smpl` and `cue` chunks, share-link round trip.
+- **perf:** WASM FFT availability, accuracy and speed.
 
-## 5. Roadmap
+Browser end-to-end checks were run with Playwright and headless Chromium:
 
-### Phase 2: seam quality
-- **Phrase awareness.** Detect 4-, 8- and 16-bar phrase boundaries with novelty on the self-similarity matrix, and prefer jumps at phrase ends ("land on the 1 of a new phrase").
-- **Better downbeats.** Add a small learned downbeat model (an ONNX CNN over the beat-synchronous spectrogram), keeping the heuristic as a fallback.
-- **Tempo-varying music.** Use local-tempo DP or a particle-filter tracker for live, rubato or swing recordings. Today a single global period is assumed.
-- **Micro time-stretch at the seam.** When the tempos on the two sides differ by more than about 0.5%, stretch the incoming bar over the fade with WSOLA so the downbeats stay locked.
-- **Spectral seam check.** Compare a short-window spectrum across the seam, alongside the waveform correlation, and reject seams that cause a sudden change in brightness.
-- **Loudness matching.** Apply a small gain ramp when the two sides differ by more than 1 dB.
-- **Adaptive fade length.** Short fades on percussive seams, long fades on pads.
+- early playback
+- cross-origin isolation
+- DSP separation, presets, lock and unlock
+- loop and endless exports, with chunks verified
+- sleep timer
+- share link applied on a fresh page
+- cache hit on reload
+- HTDemucs in the browser via onnxruntime-web
 
-### Phase 3: stems (source separation)
-- Run HTDemucs or a similar model in the browser through ONNX Runtime Web with WebGPU, falling back to a server.
-- **Seams per stem.** Vocals are what usually give a seam away, so prefer seams where the vocal stem is silent or identical. Crossfade each stem with its own law, for example cutting drums on the transient and fading pads over a long window.
-- **Stem mixer.** Mute or solo stems, for example an "instrumental endless" mode or drums-only practice loops.
-- **Cross-section mashups.** Loop the drums of section A under the harmony of section B, where the beat grid allows it.
+## 6. Known limitations
 
-### Phase 4: product
-- Cache analysis in IndexedDB, keyed by audio hash, so tracks reopen instantly.
-- **Extend to N minutes with a real ending.** The planner aims to arrive in the outro at the target time instead of fading out.
-- Write `smpl` and `cue ` chunks into exported WAVs so samplers pick up loop points, and add an export of loop markers for DAWs.
-- Media Session API, background playback, a sleep timer, and a PWA install.
-- Share a loop as a link that carries the analysis and seam choices. Each user supplies their own audio file.
-
-### Phase 5: performance
-- A WASM SIMD FFT and feature extraction, targeting under 1 s analysis for a 5-minute track.
-- Streaming analysis so playback can start before analysis finishes.
-- A SharedArrayBuffer for PCM, so the copy into the worklet goes away. This needs COOP/COEP headers.
-
-## 6. Known limitations (MVP)
-
-- Music with free tempo (classical, ambient without a beat) gets few or no seams. The endless core may be small, and the UI says so.
+- The test corpus is synthetic. A CC-licensed set of real recordings with hand-marked seams and listening checks is the next step.
+- The DSP separator is an estimate. Centre-panned sustained instruments leak into "vocals". Use HTDemucs for quality.
+- HTDemucs on CPU (WASM) takes minutes per song. WebGPU support depends on the browser.
+- The default model URL points to a third-party ONNX export of Meta's MIT-licensed HTDemucs weights on Hugging Face. The URL can be changed in Advanced, and self-hosting the model is recommended for production.
 - The meter model only knows 3/4 and 4/4.
-- PCM is held twice in memory, on the main thread and in the worklet. That is about 180 MB for a 4-minute 48 kHz stereo track.
-- The test corpus is synthetic. The next step is a small regression set of real recordings (CC-licensed) with hand-marked seams and listening checks.
+- Render-to-length snaps to whole bars, and to lengths the seam graph can actually reach.
+- Stem lock assumes a steady tempo. On tempo-drifting tracks a locked stem can drift up to a few percent against the rest within one loop cycle.

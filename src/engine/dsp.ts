@@ -1,4 +1,4 @@
-import { FFT } from './fft';
+import { createFFT } from './wasm-fft';
 
 /** Average all channels into one mono signal. */
 export function mixdown(channels: Float32Array[]): Float32Array {
@@ -62,7 +62,7 @@ export interface Spectrogram {
  * sample f * hop, which keeps beat times unbiased.
  */
 export function stft(x: Float32Array, sampleRate: number, fftSize = 2048, hop = 512): Spectrogram {
-  const fft = new FFT(fftSize);
+  const fft = createFFT(fftSize);
   const bins = fftSize / 2 + 1;
   const frames = Math.max(1, Math.floor(x.length / hop) + 1);
   const mag = new Float32Array(frames * bins);

@@ -1,5 +1,5 @@
 import { resample } from './dsp';
-import { FFT } from './fft';
+import { createFFT, type FFTLike } from './wasm-fft';
 import type { Stems } from './separate';
 
 /**
@@ -27,10 +27,10 @@ export interface DemucsRunner {
   run(input: Float32Array, spec: Float32Array): Promise<{ spec: Float32Array; wave: Float32Array }>;
 }
 
-let fft: FFT | null = null;
+let fft: FFTLike | null = null;
 let hann: Float64Array | null = null;
 function tools() {
-  fft ??= new FFT(NFFT);
+  fft ??= createFFT(NFFT);
   if (!hann) {
     hann = new Float64Array(NFFT);
     for (let i = 0; i < NFFT; i++) hann[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / NFFT); // periodic

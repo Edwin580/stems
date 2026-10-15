@@ -14,7 +14,6 @@ export type FromSeparation =
 
 const post = (m: FromSeparation, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 
-const ORT_VERSION = '1.20.1';
 const MODEL_CACHE = 'stems-models-v1';
 
 /** Fetch the model once and keep it in Cache Storage (it is ~180 MB). */
@@ -47,7 +46,6 @@ async function loadModel(url: string): Promise<ArrayBuffer> {
 
 async function htdemucsRunner(modelUrl: string): Promise<{ runner: DemucsRunner; backend: string }> {
   const ort = await import('onnxruntime-web/webgpu');
-  ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
   ort.env.wasm.numThreads = (self as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
   const model = await loadModel(modelUrl);
   post({ type: 'progress', stage: 'Starting model', fraction: 0 });

@@ -1,4 +1,4 @@
-import { FFT } from './fft';
+import { createFFT } from './wasm-fft';
 
 export const STEM_NAMES = ['drums', 'bass', 'vocals', 'other'] as const;
 export type StemName = (typeof STEM_NAMES)[number];
@@ -56,7 +56,7 @@ export function separateDsp(channels: Float32Array[], sampleRate: number, onProg
   const N = 2048, H = 1024, bins = N / 2 + 1, K = 9, half = 4;
   const L = channels[0], R = channels[1] ?? channels[0];
   const len = L.length;
-  const fft = new FFT(N);
+  const fft = createFFT(N);
   const win = new Float64Array(N);
   for (let i = 0; i < N; i++) win[i] = Math.sqrt(0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N));
 

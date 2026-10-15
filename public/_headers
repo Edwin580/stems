@@ -1,0 +1,6 @@
+# Cross-origin isolation enables SharedArrayBuffer (zero-copy audio between
+# the page, the AudioWorklet and workers) and multi-threaded WASM inference.
+# Netlify / Cloudflare Pages format; set the same two headers on any host.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
