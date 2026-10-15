@@ -692,10 +692,21 @@ $('sp-disconnect').addEventListener('click', () => {
   spRefreshAuth();
 });
 $('sp-device').addEventListener('click', async () => {
+  spPlayer.activate();
   $('sp-status').textContent = 'Starting player…';
-  try { await spPlayer.connect(); }
+  try { await spPlayer.ensureReady(); }
   catch (err) { $('sp-status').textContent = err instanceof Error ? err.message : String(err); }
 });
+
+// Cross-origin isolation (multi-threaded mode) blocks the embedded YouTube and
+// Spotify players, so say so where they live and offer the switch.
+if (crossOriginIsolated) {
+  const note = document.createElement('p');
+  note.className = 'notice-inline';
+  note.innerHTML = 'Multi-threaded mode is on, which blocks the embedded YouTube and Spotify players. <button type="button">Turn it off</button>';
+  note.querySelector('button')!.addEventListener('click', () => { void setIsolation(false); });
+  $('sources').querySelector('.hint')!.after(note);
+}
 $('sp-search').addEventListener('click', async () => {
   const q = $<HTMLInputElement>('sp-q').value.trim();
   if (!q) return;
@@ -721,12 +732,22 @@ function playSpotifyResult(t: SpotifyTrack, ol: HTMLElement) {
       <button data-act="open">Open in Spotify</button>
     </span>`;
   li.querySelector<HTMLButtonElement>('[data-act=play]')!.onclick = async () => {
-    try { await spPlayer.playUri(t.uri); }
-    catch (err) { $('sp-status').textContent = `${err instanceof Error ? err.message : String(err)} (Premium required)`; }
+    spPlayer.activate(); // must run inside the click, before any await
+    $('sp-status').textContent = 'Starting playback…';
+    try {
+      spAudio.pause();
+      await spPlayer.playUri(t.uri);
+      $('sp-status').textContent = '';
+      $('sp-now').textContent = `▶ ${t.name} — ${t.artists}`;
+    } catch (err) {
+      $('sp-status').textContent = err instanceof Error ? err.message : String(err);
+    }
   };
-  li.querySelector<HTMLButtonElement>('[data-act=preview]')!.onclick = () => {
+  // Spotify no longer returns preview URLs for most tracks; the button only exists when it does.
+  const previewBtn = li.querySelector<HTMLButtonElement>('[data-act=preview]');
+  if (previewBtn) previewBtn.onclick = () => {
     spAudio.src = t.previewUrl!;
-    spAudio.play().catch(() => {});
+    spAudio.play().catch((e) => { $('sp-status').textContent = `Preview failed: ${e instanceof Error ? e.message : String(e)}`; });
     $('sp-now').textContent = `♪ Preview · ${t.name} — ${t.artists}`;
   };
   li.querySelector<HTMLButtonElement>('[data-act=open]')!.onclick = () =>

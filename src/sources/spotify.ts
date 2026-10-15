@@ -146,8 +146,16 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   });
   if (r.status === 401) { spotifyLogout(); throw new Error('Spotify session expired; please reconnect.'); }
-  if (!r.ok) throw new Error(`Spotify API error (${r.status})`);
-  return (await r.json()) as T;
+  if (!r.ok) {
+    let detail = '';
+    try { detail = (await r.json())?.error?.message ?? ''; } catch { /* no body */ }
+    if (r.status === 403) throw new Error(`Spotify refused playback${detail ? `: ${detail}` : ''} (in-app playback needs Premium).`);
+    if (r.status === 404) throw new Error(`Spotify player not found${detail ? `: ${detail}` : ''}.`);
+    throw new Error(`Spotify API error (${r.status})${detail ? `: ${detail}` : ''}`);
+  }
+  // Player endpoints answer 204 No Content (or an empty 200/202) on success.
+  const text = await r.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export interface SpotifyTrack {
@@ -236,12 +244,35 @@ export class SpotifyWebPlayer {
     if (!ok) throw new Error('Could not start the Spotify player (Premium required).');
   }
 
-  async playUri(uri: string): Promise<void> {
-    if (!this.deviceId) throw new Error('Player not ready yet.');
-    await api(`/me/player/play?device_id=${this.deviceId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ uris: [uri] }),
+  /** Connect the in-page device if needed and wait until Spotify reports it ready. */
+  async ensureReady(timeoutMs = 15_000): Promise<string> {
+    if (this.deviceId) return this.deviceId;
+    const ready = new Promise<string>((resolve, reject) => {
+      const prev = this.events.onReady;
+      const timer = setTimeout(() => reject(new Error('The Spotify player did not become ready (Premium is required for in-app playback).')), timeoutMs);
+      this.events.onReady = (id) => { clearTimeout(timer); this.events.onReady = prev; prev?.(id); resolve(id); };
     });
+    if (!this.player) await this.connect();
+    return ready;
+  }
+
+  /**
+   * Browsers block audio that doesn't start from a user gesture; the SDK's
+   * activateElement() must run synchronously inside the click handler.
+   */
+  activate() { this.player?.activateElement?.(); }
+
+  async playUri(uri: string): Promise<void> {
+    const deviceId = await this.ensureReady();
+    const play = () => api(`/me/player/play?device_id=${deviceId}`, { method: 'PUT', body: JSON.stringify({ uris: [uri] }) });
+    try {
+      await play();
+    } catch (err) {
+      // A freshly registered device can take a moment to appear in Spotify Connect.
+      if (!(err instanceof Error) || !/not found/i.test(err.message)) throw err;
+      await new Promise((r) => setTimeout(r, 1500));
+      await play();
+    }
   }
 
   pause() { this.player?.pause(); }

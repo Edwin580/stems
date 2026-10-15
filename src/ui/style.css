@@ -137,3 +137,5 @@ h3 { margin: 0 0 8px; font-size: 14px; }
 .lyrics .line .t { font-variant-numeric: tabular-nums; min-width: 44px; }
 .lyrics .line.active { color: var(--text); background: var(--loop-bg); font-weight: 600; }
 .panel .row { justify-content: flex-start; margin-bottom: 6px; }
+.notice-inline { border: 1px solid var(--accent); border-radius: 10px; padding: 8px 12px; color: var(--text); font-size: 13px; }
+.notice-inline button { margin-left: 8px; padding: 4px 10px; font-size: 13px; }
