@@ -11,7 +11,12 @@
  * where Spotify provides them.
  */
 
-const CLIENT_ID = import.meta.env.VITE_SPOTIFY_CLIENT_ID as string | undefined;
+// The fallback is the public Client ID of the "stems" Spotify developer app.
+// For a PKCE app the Client ID is a public identifier (it ships in every
+// visitor's browser by design); there is no client secret anywhere in this
+// codebase. VITE_SPOTIFY_CLIENT_ID overrides it, e.g. for a fork's own app.
+const CLIENT_ID = (import.meta.env.VITE_SPOTIFY_CLIENT_ID as string | undefined)
+  ?? '90d6b4f7e843401daf309db1aa6a5a7f';
 const SCOPES = [
   'streaming',
   'user-read-email',

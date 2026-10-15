@@ -49,7 +49,7 @@ The endless engine needs a decoded audio buffer, so it works on uploaded files (
 - **YouTube** — paste any watch / youtu.be / embed / Shorts link; it plays embedded. Set `VITE_YOUTUBE_API_KEY` (Data API v3) for in-app search.
 - **Spotify** — connect with OAuth (PKCE, so no client secret in the browser). Search tracks, play full songs in-app with the Web Playback SDK (needs Premium), or play 30-second previews / open in Spotify without it.
 
-Setup: copy `.env.example` to `.env`, create a free app at https://developer.spotify.com/dashboard, and register the app's root URL as a Redirect URI (local dev: `http://127.0.0.1:5173/` and `http://localhost:5173/`; production: `https://edwin580.github.io/stems/`).
+Setup: the app's public Client ID is built in as the default, so Spotify works out of the box. To use your own app instead, copy `.env.example` to `.env`, create a free app at https://developer.spotify.com/dashboard, and register the app's root URL as a Redirect URI (local dev: `http://127.0.0.1:5173/` — Spotify rejects `localhost`, so open the dev server via 127.0.0.1; production: `https://edwin580.github.io/stems/`).
 
 ## Lyrics
 
