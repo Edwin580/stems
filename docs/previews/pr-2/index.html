@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0d0f14" />
+    <meta name="description" content="Drop a song and it plays forever: beat-matched, phase-aligned seams, stem separation and seamless loop export, all in your browser." />
+    <title>stems — infinite seamless loops</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <script type="module" crossorigin src="./assets/index-DgLnRKnl.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-C_-wFPxP.css">
+  </head>
+  <body>
+    <header>
+      <div class="brand"><span class="logo">∞</span> stems</div>
+      <p class="tag">Drop a song. It plays forever — beat-matched, phase-aligned, no audible seams.</p>
+    </header>
+
+    <main>
+      <section id="share-banner" class="card notice hidden"></section>
+
+      <section id="drop" class="drop">
+        <input id="file" type="file" accept="audio/*" hidden />
+        <div class="drop-inner">
+          <div class="big">Drop an audio file here</div>
+          <div class="sub">MP3, WAV, FLAC, M4A, OGG — everything stays on your device</div>
+          <div class="row">
+            <button id="pick" class="primary">Choose file</button>
+            <button id="demo">Try the demo track</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="error" class="card error hidden"></section>
+
+      <section id="app" class="hidden">
+        <div class="card now">
+          <div class="title-row">
+            <div>
+              <div id="track" class="track">—</div>
+              <div id="stats" class="stats"></div>
+            </div>
+            <button id="another" class="ghost">Load another</button>
+          </div>
+          <div id="aprog" class="aprog">
+            <div class="progress-label"><span id="stage">Decoding</span><span id="pct">0%</span></div>
+            <div class="bar"><div id="bar-fill"></div></div>
+          </div>
+          <canvas id="viz" aria-label="Song map: waveform, beats and jump arcs. Click to seek."></canvas>
+          <div class="transport">
+            <button id="play" class="primary round" aria-label="Play">▶</button>
+            <div class="clock">
+              <div><span class="k">Listening</span> <span id="listened">0:00</span></div>
+              <div><span class="k">Position</span> <span id="posn">0:00</span></div>
+              <div><span class="k">Seams crossed</span> <span id="jumps">0</span></div>
+            </div>
+            <div class="spacer"></div>
+            <label class="sleep"><span class="k">Sleep</span>
+              <select id="sleep">
+                <option value="0">Off</option>
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="60">1 hour</option>
+                <option value="90">90 min</option>
+              </select>
+              <span id="sleep-left" class="sub"></span>
+            </label>
+            <button id="share">Share</button>
+          </div>
+          <div id="share-out" class="share-out hidden">
+            <input id="share-url" readonly aria-label="Share link" />
+            <small>Links carry seams and settings, never audio: the recipient opens the same file.</small>
+          </div>
+        </div>
+
+        <div class="tabs" role="tablist">
+          <button role="tab" data-mode="endless" class="tab active">Endless</button>
+          <button role="tab" data-mode="loop" class="tab">Perfect loop</button>
+          <button role="tab" data-mode="stems" class="tab">Stems</button>
+        </div>
+
+        <div id="panel-endless" class="card panel">
+          <p class="hint">Wanders through the song forever, jumping between musically identical moments. Jumps are bar-aligned, prefer phrase boundaries, and are phase-matched at sample level.</p>
+          <label class="ctl">
+            <span>Jump about every <b id="bars-v">8</b> bars</span>
+            <input id="bars" type="range" min="1" max="32" step="1" value="8" />
+          </label>
+          <label class="ctl">
+            <span>Seam strictness <b id="thr-v"></b></span>
+            <input id="thr" type="range" min="0.05" max="0.6" step="0.01" value="0.3" />
+            <small>Stricter = fewer, cleaner jumps. <span id="thr-note"></span></small>
+          </label>
+          <label class="ctl">
+            <span>Phrase preference <b id="phrase-v">60%</b></span>
+            <input id="phrase" type="range" min="0" max="1" step="0.05" value="0.6" />
+            <small>How strongly to favour leaving at the end of a 4/8-bar phrase.</small>
+          </label>
+          <label class="ctl">
+            <span>Crossfade <b id="fade-v">60 ms</b></span>
+            <input id="fade" type="range" min="5" max="200" step="5" value="60" />
+          </label>
+          <div class="checks">
+            <label class="check"><input id="barlock" type="checkbox" checked /> Only jump on bar lines</label>
+            <label class="check"><input id="autofade" type="checkbox" checked /> Adaptive fades (never split a drum hit)</label>
+            <label class="check"><input id="loudness" type="checkbox" checked /> Match loudness across seams</label>
+          </div>
+          <div class="export">
+            <label>Render <input id="mins" type="number" min="1" max="60" value="10" /> minutes</label>
+            <label class="check"><input id="realend" type="checkbox" checked /> End on the song's real ending</label>
+            <button id="render">Download WAV</button>
+            <small id="render-note"></small>
+          </div>
+        </div>
+
+        <div id="panel-loop" class="card panel hidden">
+          <p class="hint">One section, repeated forever through a single verified seam. WAV exports carry sampler loop points and loop gaplessly anywhere.</p>
+          <ol id="loops" class="loops"></ol>
+        </div>
+
+        <div id="panel-stems" class="card panel hidden">
+          <p class="hint">Split the song into drums, bass, vocals and other. Seams then avoid moments where someone is singing, each stem gets its own crossfade, and you can mute, solo or lock stems.</p>
+          <div id="sep-actions" class="row left">
+            <button id="sep-dsp" class="primary">Separate (fast, built-in)</button>
+            <button id="sep-ml">Separate with HTDemucs (best quality)</button>
+          </div>
+          <small id="sep-note" class="sub">HTDemucs downloads a ~180 MB model once (cached), then runs on your GPU (WebGPU) or CPU. Expect a few minutes per song on CPU.</small>
+          <div id="sprog" class="aprog hidden">
+            <div class="progress-label"><span id="sstage">Separating</span><span id="spct">0%</span></div>
+            <div class="bar"><div id="sbar-fill"></div></div>
+          </div>
+          <div id="mixer" class="mixer hidden">
+            <div class="presets row left">
+              <button data-preset="full">Full mix</button>
+              <button data-preset="instrumental">Instrumental</button>
+              <button data-preset="acapella">A cappella</button>
+              <button data-preset="drums">Drums + bass</button>
+            </div>
+            <div id="stem-rows"></div>
+            <label class="check"><input id="vocalaware" type="checkbox" checked /> Vocal-aware seams (avoid jumping mid-phrase)</label>
+            <small class="sub">🔒 locks a stem to the selected perfect loop: it keeps cycling on the bar grid while the rest of the song wanders.</small>
+          </div>
+          <details class="adv">
+            <summary>Advanced</summary>
+            <label class="ctl"><span>HTDemucs ONNX model URL</span><input id="model-url" type="url" /></label>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div>Custom engine: local-tempo beat tracking · multi-cue downbeats · phrase novelty · context-matched self-similarity · strongly-connected jump graph · cross-correlation seam alignment · adaptive, varispeed, correlation-aware crossfades · per-stem splicing in an AudioWorklet · WASM SIMD FFT.</div>
+      <div class="foot-row"><span id="env-note"></span> <button id="install" class="ghost hidden">Install app</button> <button id="clear-cache" class="ghost">Clear cache</button></div>
+    </footer>
+  </body>
+</html>
