@@ -208,3 +208,42 @@ export function frameLoudnessDb(spec: Spectrogram): Float32Array {
   }
   return out;
 }
+
+/**
+ * Band-limited resampling by an arbitrary ratio (windowed sinc, 16 zero
+ * crossings per side, cutoff at the lower Nyquist). Used to feed 44.1 kHz
+ * models from 48 kHz audio and back.
+ */
+export function resample(x: Float32Array, from: number, to: number): Float32Array {
+  if (from === to) return x.slice();
+  const ratio = to / from;
+  const outLen = Math.round(x.length * ratio);
+  const out = new Float32Array(outLen);
+  const cutoff = Math.min(1, ratio) * 0.97;
+  const zc = 16;
+  const halfW = zc / cutoff;
+  // Kernel sampled at RES points per input sample, linearly interpolated.
+  const RES = 256;
+  const tl = Math.ceil(halfW * RES) + 2;
+  const table = new Float32Array(tl);
+  for (let k = 0; k < tl; k++) {
+    const t = k / RES;
+    const a = Math.PI * t * cutoff;
+    const sinc = t === 0 ? 1 : Math.sin(a) / a;
+    table[k] = t >= halfW ? 0 : sinc * (0.5 + 0.5 * Math.cos((Math.PI * t) / halfW));
+  }
+  for (let o = 0; o < outLen; o++) {
+    const c = o / ratio;
+    const i0 = Math.ceil(c - halfW), i1 = Math.floor(c + halfW);
+    let acc = 0, wsum = 0;
+    for (let i = i0; i <= i1; i++) {
+      const p = Math.abs(i - c) * RES;
+      const k = p | 0;
+      const h = table[k] + (table[k + 1] - table[k]) * (p - k);
+      wsum += h;
+      if (i >= 0 && i < x.length) acc += x[i] * h;
+    }
+    out[o] = acc / wsum;
+  }
+  return out;
+}

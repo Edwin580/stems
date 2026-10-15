@@ -1,6 +1,7 @@
 import type { LoopCandidate } from './loops';
 import type { Planner } from './planner';
 import { Splicer } from './splicer';
+import { StemEngine } from './stemengine';
 
 /**
  * Bake one cycle of a loop into a standalone buffer that repeats seamlessly
@@ -19,24 +20,30 @@ export function bakeLoop(channels: Float32Array[], loop: LoopCandidate, sampleRa
   return outs;
 }
 
-/** Offline render of the planner's path from the start of the song. */
-export function renderPath(channels: Float32Array[], sampleRate: number, planner: Planner, seconds: number): Float32Array[] {
+export interface RenderSources {
+  groups: Float32Array[][];
+  names: string[];
+  gains?: number[];
+}
+
+/** Offline render of the planner's path from the start of the song, through the full stem engine. */
+export function renderPath(src: RenderSources, sampleRate: number, planner: Planner, seconds: number): Float32Array[] {
   const total = Math.round(seconds * sampleRate);
-  const sp = new Splicer(channels, sampleRate);
-  sp.setRunning(true);
+  const eng = new StemEngine(src.groups, src.names, sampleRate);
+  src.gains?.forEach((g, i) => eng.setGain(i, g, true));
+  eng.setRunning(true);
   planner.resetFrom(0);
-  const outs = channels.map(() => new Float32Array(total));
+  const outs = [new Float32Array(total), new Float32Array(total)];
   const block = 4096;
-  let done = false;
-  for (let off = 0; off < total && !done; off += block) {
-    while (sp.pending().length < 2) {
+  for (let off = 0; off < total; off += block) {
+    while (eng.pending().length < 2) {
       const j = planner.next();
       if (!j) break;
-      sp.enqueue(j);
+      eng.enqueue(j);
     }
     const n = Math.min(block, total - off);
-    const ev = sp.render(outs, n, off);
-    if (ev.some((e) => e.type === 'ended')) done = true;
+    const ev = eng.render(outs, n, off);
+    if (ev.some((e) => e.type === 'ended')) break;
   }
   // Fade the last 2 s so the file doesn't end abruptly.
   const tail = Math.min(total, 2 * sampleRate);

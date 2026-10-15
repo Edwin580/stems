@@ -109,7 +109,7 @@ describe.each([
   it('endless render never runs out and has no clicks at seams', () => {
     const planner = new Planner(a, src, coarse, { ...DEFAULT_SETTINGS, barsBetweenJumps: 2 }, 42);
     const seconds = song.channels[0].length / song.sampleRate * 3;
-    const out = renderPath(song.channels, song.sampleRate, planner, seconds);
+    const out = renderPath({ groups: [song.channels], names: ["mix"] }, song.sampleRate, planner, seconds);
     const len = out[0].length;
     // Audio is still playing at the end (energy in the second-to-last 3 s).
     let e = 0;
