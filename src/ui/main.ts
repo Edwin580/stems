@@ -176,7 +176,7 @@ function renderLoops() {
       updatePlayButton();
     };
     li.querySelector<HTMLButtonElement>('[data-act=wav]')!.onclick = () => {
-      const baked = bakeLoop(p.source!.channels, l, p.planner!.fade);
+      const baked = bakeLoop(p.source!.channels, l, sr);
       download(encodeWav(baked, sr), `${trackName} - seamless loop ${i + 1}.wav`);
     };
     ol.appendChild(li);

@@ -1,4 +1,5 @@
-import { alignSeam, type AudioSource } from './align';
+import type { AudioSource } from './align';
+import { buildSeam } from './seam';
 import type { Analysis } from './analyze';
 import { infiniteCore, pruneToCore } from './graph';
 import type { LoopCandidate } from './loops';
@@ -29,6 +30,14 @@ export interface PlannerSettings {
   fadeSec: number;
   /** Reject seams whose sample-level correlation is below this (unless forced). */
   minRho: number;
+  /** Reject seams whose spectrum jumps more than this many dB on average (unless forced). */
+  maxSpectralDb: number;
+  /** Shorten fades around transients, lengthen them on smooth material. */
+  autoFade: boolean;
+  /** Ramp the level when the two sides of a seam differ in loudness. */
+  loudnessMatch: boolean;
+  /** 0..1: how strongly to favour jumping at phrase boundaries. */
+  phraseBias: number;
   loop: LoopCandidate | null;
 }
 
@@ -39,6 +48,10 @@ export const DEFAULT_SETTINGS: PlannerSettings = {
   barLock: true,
   fadeSec: 0.06,
   minRho: 0.2,
+  maxSpectralDb: 8,
+  autoFade: true,
+  loudnessMatch: true,
+  phraseBias: 0.6,
   loop: null,
 };
 
@@ -131,11 +144,20 @@ export class Planner {
     return (((i + 1 - this.a.meter.phase) % m) + m) % m === 0;
   }
 
-  private makeJump(from: number, to: number): Jump {
+  private makeJump(from: number, to: number): Jump & { spectralDb: number } {
     const at = this.a.beats[from + 1];
-    const fade = this.fade;
-    const al = alignSeam(this.src, this.coarse, at, this.a.beats[to], fade);
-    return { id: this.nextId++, at, to: al.to, fade, rho: al.rho, fromBeat: from, toBeat: to };
+    const seam = buildSeam(this.src, this.coarse, at, this.a.beats[to], {
+      fade: this.fade,
+      autoFade: this.s.autoFade,
+      loudnessMatch: this.s.loudnessMatch,
+      periodOut: this.a.beatPeriods[from],
+      periodIn: this.a.beatPeriods[Math.max(0, to - 1)],
+    });
+    return {
+      id: this.nextId++, at, to: seam.to, fade: seam.fade, rho: seam.rho, drift: seam.drift,
+      gainDb: seam.gainDb, gainRamp: Math.round(3 * this.a.sampleRate), fromBeat: from, toBeat: to,
+      spectralDb: seam.spectralDb,
+    };
   }
 
   /**
@@ -158,18 +180,23 @@ export class Planner {
         // Linearly rising hazard → jump spacing averages `expected` beats.
         const k = this.beatsSinceJump + 1;
         const checksPerBeat = this.s.barLock ? m : 1;
-        const p = Math.min(1, (k * Math.PI * checksPerBeat) / (2 * expected * expected));
+        // Phrase boundaries are the most natural places to leave: boost the
+        // hazard there and damp it elsewhere, keeping the mean spacing similar.
+        const ph = this.a.phrase[i + 1] ?? 0;
+        const phraseMul = 1 + this.s.phraseBias * (3 * ph - 0.5);
+        const p = Math.min(1, (phraseMul * k * Math.PI * checksPerBeat) / (2 * expected * expected));
         if (this.rng() > p) continue;
       }
       const edge = this.chooseEdge(out, forced);
       if (!edge) continue;
       const jump = this.makeJump(edge.from, edge.to);
-      if (!forced && jump.rho < this.s.minRho) continue;
+      if (!forced && (jump.rho < this.s.minRho || jump.spectralDb > this.s.maxSpectralDb)) continue;
       this.recentTargets.push(edge.to);
       if (this.recentTargets.length > 6) this.recentTargets.shift();
       this.cursor = edge.to;
       this.beatsSinceJump = 0;
-      return jump;
+      const { spectralDb: _s, ...plain } = jump;
+      return plain;
     }
     return null;
   }
@@ -194,10 +221,14 @@ export class Planner {
       id: this.nextId++,
       at: loop.endSample,
       to: loop.startSample,
-      fade: this.fade,
+      fade: loop.fade,
       rho: loop.rho,
+      drift: loop.drift,
       fromBeat: loop.endBeat - 1,
       toBeat: loop.startBeat,
     };
   }
+
+  /** Expose the analysis for helpers (render-to-length). */
+  get analysis(): Analysis { return this.a; }
 }

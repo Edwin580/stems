@@ -1,4 +1,5 @@
-import { alignSeam, type AudioSource } from './align';
+import type { AudioSource } from './align';
+import { buildSeam } from './seam';
 import type { Analysis } from './analyze';
 import { costToQuality } from './similarity';
 
@@ -13,6 +14,9 @@ export interface LoopCandidate {
   endSample: number;
   cost: number;
   rho: number;
+  fade: number;
+  drift: number;
+  spectralDb: number;
   quality: number;
   bars: number;
   seconds: number;
@@ -24,6 +28,7 @@ export interface LoopSearchOptions {
   /** Bias toward longer loops; 0 = pure seam quality. */
   lengthBias: number;
   fade: number;
+  autoFade?: boolean;
 }
 
 /**
@@ -56,8 +61,16 @@ export function findLoops(a: Analysis, src: AudioSource, coarse: Float32Array, o
   }
   const out: LoopCandidate[] = picked.map((p) => {
     const at = a.beats[p.e];
-    const al = alignSeam(src, coarse, at, a.beats[p.s], opts.fade);
-    const cost = p.cost + 0.3 * (1 - Math.max(0, al.rho));
+    // Loops repeat verbatim, so no loudness ramp: the seam must stand on its own.
+    const seam = buildSeam(src, coarse, at, a.beats[p.s], {
+      fade: opts.fade,
+      autoFade: opts.autoFade ?? true,
+      loudnessMatch: false,
+      periodOut: a.beatPeriods[p.e - 1],
+      periodIn: a.beatPeriods[Math.max(0, p.s - 1)],
+    });
+    const cost = p.cost + seam.penalty;
+    const al = seam;
     return {
       startBeat: p.s,
       endBeat: p.e,
@@ -65,6 +78,9 @@ export function findLoops(a: Analysis, src: AudioSource, coarse: Float32Array, o
       endSample: at,
       cost,
       rho: al.rho,
+      fade: seam.fade,
+      drift: seam.drift,
+      spectralDb: seam.spectralDb,
       quality: costToQuality(cost),
       bars: (p.e - p.s) / m,
       seconds: (at - al.to) / src.sampleRate,

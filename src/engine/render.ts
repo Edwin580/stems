@@ -1,26 +1,22 @@
 import type { LoopCandidate } from './loops';
 import type { Planner } from './planner';
-import { crossfadeGains, Splicer } from './splicer';
+import { Splicer } from './splicer';
 
 /**
  * Bake one cycle of a loop into a standalone buffer that repeats seamlessly
- * in any player or DAW. The last `fade` samples carry the same crossfade the
- * live engine plays, so cycle N's tail flows into cycle N+1's head.
+ * in any player or DAW. Rendered with the live Splicer starting at the loop
+ * start: the first cycle already equals the steady state (plain audio from
+ * `to`, ending in the seam crossfade), so cycle N's tail flows into N+1's head.
  */
-export function bakeLoop(channels: Float32Array[], loop: LoopCandidate, fade: number, rho = loop.rho): Float32Array[] {
-  const at = loop.endSample, to = loop.startSample;
-  const L = at - to;
-  const F = Math.min(fade, L >> 1);
-  return channels.map((ch) => {
-    const out = new Float32Array(L);
-    out.set(ch.subarray(to, at));
-    for (let k = 0; k < F; k++) {
-      const [ga, gb] = crossfadeGains((k + 0.5) / F, rho);
-      const inIdx = to - F + k;
-      out[L - F + k] = ga * ch[at - F + k] + gb * (inIdx >= 0 ? ch[inIdx] : 0);
-    }
-    return out;
-  });
+export function bakeLoop(channels: Float32Array[], loop: LoopCandidate, sampleRate: number): Float32Array[] {
+  const L = loop.endSample - loop.startSample;
+  const sp = new Splicer(channels, sampleRate);
+  sp.setRunning(true);
+  sp.pos = loop.startSample;
+  sp.enqueue({ id: 1, at: loop.endSample, to: loop.startSample, fade: Math.min(loop.fade, L >> 1), rho: loop.rho, drift: loop.drift });
+  const outs = channels.map(() => new Float32Array(L));
+  sp.render(outs, L);
+  return outs;
 }
 
 /** Offline render of the planner's path from the start of the song. */

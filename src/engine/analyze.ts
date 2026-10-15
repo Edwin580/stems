@@ -1,7 +1,10 @@
 import { chroma, dctRows, decimate, frameLoudnessDb, logMel, stft } from './dsp';
-import { beatBiasCorrection, estimateTempo, onsetEnvelope, refineBeatFrames, trackBeats } from './beats';
-import { beatFeatures, estimateMeter, type Meter } from './features';
-import { beatDistanceMatrix, candidateEdges, costQuantile, DEFAULT_TRANSITION_OPTIONS, transitionMatrix, type Edge } from './similarity';
+import { beatBiasCorrection, estimateTempo, localPeriods, onsetEnvelope, refineBeatFrames, trackBeats } from './beats';
+import { beatFeatures } from './features';
+import { estimateMeter, footeNovelty, phraseScores, type Meter } from './structure';
+import { beatDistanceMatrix, candidateEdges, costQuantile, DEFAULT_TRANSITION_OPTIONS, transitionMatrix, type Edge, type TransitionExtras } from './similarity';
+
+export type { Meter };
 
 export interface Analysis {
   sampleRate: number;
@@ -19,6 +22,16 @@ export interface Analysis {
   suggestedThreshold: number;
   /** Per-beat loudness (dB) for display. */
   beatLoudness: number[];
+  /** Beat-to-beat distance matrix (n*n), kept so seams can be re-scored (e.g. once stems exist). */
+  distances: Float32Array;
+  /** Per-beat phrase-start score 0..1. */
+  phrase: Float32Array;
+  /** Local beat period (samples) at each beat. */
+  beatPeriods: number[];
+  /** Ratio of slowest to fastest local tempo (1 = perfectly steady). */
+  tempoSpread: number;
+  /** Per-beat seam penalty currently applied (e.g. vocal activity), if any. */
+  boundaryPenalty?: Float32Array;
 }
 
 export type Progress = (stage: string, fraction: number) => void;
@@ -33,7 +46,6 @@ export function analyze(mono: Float32Array, sampleRate: number, onProgress: Prog
   onProgress('Spectrogram', 0.1);
   const hop = 512;
   const spec = stft(x, sr, 2048, hop);
-  const frameRate = sr / hop;
 
   onProgress('Features', 0.35);
   const nMels = 40;
@@ -53,9 +65,10 @@ export function analyze(mono: Float32Array, sampleRate: number, onProgress: Prog
 
   onProgress('Tempo', 0.5);
   const tempo = estimateTempo(env, oRate);
+  const periods = localPeriods(env, tempo.period, oRate);
 
   onProgress('Beats', 0.55);
-  let oBeats = trackBeats(env, tempo.period);
+  let oBeats = trackBeats(env, periods);
   oBeats = refineBeatFrames(oBeats, env);
   if (oBeats.length < 16) throw new Error('Could not find a steady beat in this track.');
   // Beat positions in feature-STFT frames.
@@ -67,33 +80,63 @@ export function analyze(mono: Float32Array, sampleRate: number, onProgress: Prog
   }
 
   onProgress('Beat features', 0.65);
-  const feats = beatFeatures(beatFrames, spec.frames, chr, mfcc, loud, envAtFeatureRate);
-  const meter = estimateMeter(feats.novelty);
+  const bassChr = chroma(spec, 40, 250);
+  const feats = beatFeatures(beatFrames, spec.frames, chr, mfcc, loud, envAtFeatureRate, bassChr);
   const n = feats.count;
 
-  onProgress('Self-similarity', 0.75);
+  onProgress('Self-similarity', 0.72);
   const D = beatDistanceMatrix(feats);
-  const T = transitionMatrix(D, n, { ...DEFAULT_TRANSITION_OPTIONS, beatsPerBar: meter.beatsPerBar });
 
-  onProgress('Jump graph', 0.92);
-  // Loose candidate set; the planner applies the user's strictness.
-  const [q01, q05] = costQuantile(T, [0.01, 0.05]);
-  const edges = candidateEdges(T, n, Math.max(q05, 0.55), 8);
-  const suggestedThreshold = Math.min(0.45, Math.max(0.12, q01));
+  onProgress('Meter & phrases', 0.8);
+  const meter = estimateMeter([
+    { values: feats.onset, weight: 0.5 },
+    { values: feats.harmonicChange, weight: 1 },
+    { values: feats.bassChange, weight: 0.7 },
+    { values: footeNovelty(D, n, 4), weight: 0.7 },
+  ]);
+  const phrase = phraseScores(D, n, meter);
+
+  onProgress('Jump graph', 0.88);
+  const scored = scoreTransitions(D, n, meter, { phrase });
 
   const bias = beatBiasCorrection(x, beatFrames.map((bf) => bf * hop), sr);
   const toSample = (bf: number) => Math.max(0, Math.round((bf * hop + bias) * factor));
+  const beats = beatFrames.map(toSample);
+  const beatPeriods = beats.map((_, i) => {
+    const a = Math.max(0, i - 2), b = Math.min(beats.length - 1, i + 2);
+    return (beats[b] - beats[a]) / Math.max(1, b - a);
+  });
+  const sortedP = [...beatPeriods].sort((p, q) => p - q);
+  const pLo = sortedP[Math.floor(sortedP.length * 0.1)], pHi = sortedP[Math.floor(sortedP.length * 0.9)];
   onProgress('Done', 1);
   return {
     sampleRate,
     length: mono.length,
-    bpm: 60 * frameRate / ((beatFrames[beatFrames.length - 1] - beatFrames[0]) / (beatFrames.length - 1)),
+    bpm: (60 * sampleRate) / sortedP[Math.floor(sortedP.length / 2)],
     tempoConfidence: tempo.confidence,
     meter,
-    beats: beatFrames.map(toSample),
-    edges,
-    transitions: T,
-    suggestedThreshold,
+    beats,
+    ...scored,
     beatLoudness: Array.from({ length: n }, (_, i) => (feats.loudness[i * 2] + feats.loudness[i * 2 + 1]) / 2),
+    distances: D,
+    phrase,
+    beatPeriods,
+    tempoSpread: pHi / pLo,
   };
+}
+
+/** Transition matrix, loose candidate edges and a suggested strictness. */
+export function scoreTransitions(D: Float32Array, n: number, meter: Meter, extras: TransitionExtras) {
+  const transitions = transitionMatrix(D, n, { ...DEFAULT_TRANSITION_OPTIONS, beatsPerBar: meter.beatsPerBar }, extras);
+  // Loose candidate set; the planner applies the user's strictness.
+  const [q01, q05] = costQuantile(transitions, [0.01, 0.05]);
+  const edges = candidateEdges(transitions, n, Math.max(q05, 0.55), 8);
+  const suggestedThreshold = Math.min(0.45, Math.max(0.12, q01));
+  return { transitions, edges, suggestedThreshold };
+}
+
+/** Re-score seams with an extra per-beat boundary penalty (e.g. vocal activity from stems). */
+export function rescoreWithPenalty(a: Analysis, boundaryPenalty: Float32Array | undefined): Analysis {
+  const scored = scoreTransitions(a.distances, a.beats.length, a.meter, { phrase: a.phrase, boundaryPenalty });
+  return { ...a, ...scored, boundaryPenalty };
 }

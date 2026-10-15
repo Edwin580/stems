@@ -177,13 +177,13 @@ export function dctRows(x: Float32Array, rows: number, cols: number, nOut: numbe
  * 12-bin chroma per frame from the energy spectrum (55 Hz – 2.5 kHz).
  * Linear energy keeps tonal peaks dominant over broadband drum noise.
  */
-export function chroma(spec: Spectrogram): Float32Array {
+export function chroma(spec: Spectrogram, fMin = 55, fMax = 2500): Float32Array {
   const out = new Float32Array(spec.frames * 12);
   const binHz = spec.sampleRate / spec.fftSize;
   const pcs: { bin: number; pc: number; w: number }[] = [];
   for (let b = 1; b < spec.bins; b++) {
     const f = b * binHz;
-    if (f < 55 || f > 2500) continue;
+    if (f < fMin || f > fMax) continue;
     const midi = 12 * Math.log2(f / 440) + 69;
     const nearest = Math.round(midi);
     const dist = Math.abs(midi - nearest); // 0..0.5
