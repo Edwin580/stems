@@ -6,6 +6,12 @@ export type ToSeparation = {
   channels: Float32Array[];
   sampleRate: number;
   modelUrl?: string;
+  /**
+   * Skip the WebGPU attempt entirely. Used on a retry in a fresh worker:
+   * a failed WebGPU attempt can poison this worker's shared WASM backend
+   * init (see ort-fallback.ts), so the retry must not repeat it.
+   */
+  wasmOnly?: boolean;
 };
 export type FromSeparation =
   | { type: 'progress'; stage: string; fraction: number }
@@ -44,7 +50,7 @@ async function loadModel(url: string): Promise<ArrayBuffer> {
   return buf.buffer;
 }
 
-async function htdemucsRunner(modelUrl: string): Promise<{ runner: DemucsRunner; backend: string }> {
+async function htdemucsRunner(modelUrl: string, wasmOnly = false): Promise<{ runner: DemucsRunner; backend: string }> {
   const ort = await import('onnxruntime-web/webgpu');
   ort.env.wasm.numThreads = (self as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
   const model = await loadModel(modelUrl);
@@ -56,7 +62,7 @@ async function htdemucsRunner(modelUrl: string): Promise<{ runner: DemucsRunner;
   // try it with a real adapter, and never wait on it forever.
   type Adapter = { isFallbackAdapter?: boolean; info?: Record<string, string> };
   const gpu = (navigator as unknown as { gpu?: { requestAdapter(o?: object): Promise<Adapter | null> } }).gpu;
-  const adapter = gpu ? await gpu.requestAdapter({ powerPreference: 'high-performance' }).catch(() => null) : null;
+  const adapter = !wasmOnly && gpu ? await gpu.requestAdapter({ powerPreference: 'high-performance' }).catch(() => null) : null;
   // Software rasterisers (SwiftShader, llvmpipe) are far slower than WASM for this model.
   // (GPUAdapterInfo fields are prototype getters, so read them by name.)
   const info = adapter?.info;
@@ -69,7 +75,14 @@ async function htdemucsRunner(modelUrl: string): Promise<{ runner: DemucsRunner;
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('WebGPU init timed out')), 60_000)),
       ]);
       backend = 'webgpu';
-    } catch { session = null; }
+    } catch (err) {
+      // Do not swallow this: if the failure happened inside initWasm, this
+      // worker's WASM backend is now poisoned and the create below will
+      // only report "previous call to 'initWasm()' failed". The caller
+      // retries in a fresh worker with wasmOnly set (see ort-fallback.ts).
+      session = null;
+      post({ type: 'progress', stage: `WebGPU start failed (${err instanceof Error ? err.message : String(err)}) — trying WASM`, fraction: 0 });
+    }
   }
   session ??= await ort.InferenceSession.create(model, { executionProviders: ['wasm'] });
   const s = session;
@@ -90,13 +103,13 @@ async function htdemucsRunner(modelUrl: string): Promise<{ runner: DemucsRunner;
 }
 
 self.onmessage = async (e: MessageEvent<ToSeparation>) => {
-  const { method, channels, sampleRate, modelUrl } = e.data;
+  const { method, channels, sampleRate, modelUrl, wasmOnly } = e.data;
   try {
     let stems: Stems;
     let backend = 'js';
     if (method === 'htdemucs') {
       if (!modelUrl) throw new Error('No model URL configured');
-      const r = await htdemucsRunner(modelUrl);
+      const r = await htdemucsRunner(modelUrl, wasmOnly);
       backend = r.backend;
       stems = await separateHtdemucs(channels, sampleRate, r.runner, (f, detail) => post({ type: 'progress', stage: `HTDemucs (${backend}) · ${detail ?? ''}`, fraction: f }));
     } else {
