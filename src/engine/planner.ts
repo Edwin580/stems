@@ -144,6 +144,12 @@ export class Planner {
     return (((i + 1 - this.a.meter.phase) % m) + m) % m === 0;
   }
 
+  /** Build a fully refined jump for an explicit edge (used by render-to-length). */
+  seamJump(from: number, to: number): Jump {
+    const { spectralDb: _s, ...j } = this.makeJump(from, to);
+    return j;
+  }
+
   private makeJump(from: number, to: number): Jump & { spectralDb: number } {
     const at = this.a.beats[from + 1];
     const seam = buildSeam(this.src, this.coarse, at, this.a.beats[to], {
