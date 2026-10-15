@@ -150,6 +150,12 @@
 
     <footer>
       <div>Custom engine: local-tempo beat tracking · multi-cue downbeats · phrase novelty · context-matched self-similarity · strongly-connected jump graph · cross-correlation seam alignment · adaptive, varispeed, correlation-aware crossfades · per-stem splicing in an AudioWorklet · WASM SIMD FFT.</div>
+      <div class="foot-row">
+        <label class="check" title="Cross-origin isolation: shared memory and multi-threaded WASM. Blocks embedded third-party players such as YouTube and Spotify. Reloads the page.">
+          <input id="multithread" type="checkbox" /> Multi-threaded mode
+        </label>
+        <small id="multithread-note" class="sub">≈4× faster HTDemucs on CPU; turns off embedded YouTube/Spotify players.</small>
+      </div>
       <div class="foot-row"><span id="env-note"></span> <button id="install" class="ghost hidden">Install app</button> <button id="clear-cache" class="ghost">Clear cache</button></div>
     </footer>
     <script type="module" src="/src/ui/main.ts"></script>

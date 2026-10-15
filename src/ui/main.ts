@@ -6,6 +6,7 @@ import { encodeWav } from '../engine/render';
 import { decodeShare, encodeShare, scaleLoop, type ShareState } from '../engine/share';
 import { costToQuality } from '../engine/similarity';
 import { wasmFFTAvailable } from '../engine/wasm-fft';
+import { ensureIsolationState, setIsolation } from './isolation';
 import { Visualizer } from './visualizer';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -497,27 +498,21 @@ window.addEventListener('beforeinstallprompt', (e) => {
 });
 $('install').addEventListener('click', async () => { await installPrompt?.prompt(); show('install', false); });
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
-  navigator.serviceWorker.register('./sw.js').then(() => navigator.serviceWorker.ready).then(() => {
-    // Hosts without COOP/COEP headers (GitHub Pages): the service worker adds
-    // them, but only to documents it serves, so reload once after it takes control.
-    if (!crossOriginIsolated && navigator.serviceWorker.controller) {
-      try {
-        if (!sessionStorage.getItem('stems.coiReload')) {
-          sessionStorage.setItem('stems.coiReload', '1');
-          if (!player?.source) location.reload();
-        }
-      } catch { /* storage blocked: stay non-isolated */ }
-    }
-  }).catch(() => {});
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    try {
-      if (!crossOriginIsolated && !sessionStorage.getItem('stems.coiReload') && !player?.source) {
-        sessionStorage.setItem('stems.coiReload', '1');
-        location.reload();
-      }
-    } catch { /* ignore */ }
-  });
+  navigator.serviceWorker.register('./sw.js')
+    .then(() => navigator.serviceWorker.ready)
+    .then(() => ensureIsolationState(() => !player?.source))
+    .catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => { void ensureIsolationState(() => !player?.source); });
 }
+
+// Multi-threaded mode toggle (cross-origin isolation). Needs the service worker in production builds.
+const mt = $<HTMLInputElement>('multithread');
+mt.checked = crossOriginIsolated;
+if (!import.meta.env.PROD && !crossOriginIsolated) {
+  mt.disabled = true;
+  $('multithread-note').textContent = 'Dev server: start with STEMS_ISOLATE=1 to try multi-threaded mode.';
+}
+mt.addEventListener('change', () => { void setIsolation(mt.checked); });
 
 // ---- Render loop -------------------------------------------------------------------
 function frame() {
