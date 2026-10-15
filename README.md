@@ -20,9 +20,9 @@ Everything runs locally on a custom DSP engine written in TypeScript, with an As
 
 ```bash
 npm install
-npm run dev         # http://localhost:5173 (served cross-origin isolated)
+npm run dev         # http://localhost:5173 (STEMS_ISOLATE=1 npm run dev for multi-threaded mode)
 npm test            # 62 tests on synthetic songs with ground truth
-npm run build       # static site in dist/ — deploy with the COOP/COEP headers in public/_headers
+npm run build       # static site in dist/ — any static host works (GitHub Pages included)
 npm run build:wasm  # rebuild the SIMD FFT from assembly/fft.ts
 ```
 

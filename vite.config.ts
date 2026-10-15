@@ -1,10 +1,11 @@
 import { defineConfig } from 'vite';
 
-// Cross-origin isolation → SharedArrayBuffer + threaded WASM (see public/_headers for production hosts).
-const isolation = {
-  'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Embedder-Policy': 'require-corp',
-};
+// Cross-origin isolation (SharedArrayBuffer + threaded WASM) is opt-in because it
+// blocks third-party embeds (YouTube, Spotify). In production the service worker
+// applies it when the user enables multi-threaded mode; locally, STEMS_ISOLATE=1.
+const isolation = process.env.STEMS_ISOLATE === '1'
+  ? { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' }
+  : {};
 
 export default defineConfig({
   base: './',
