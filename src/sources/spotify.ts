@@ -9,6 +9,14 @@
  * Playback: the Web Playback SDK (needs Spotify Premium) on this page as a
  * device; otherwise tracks open in Spotify and 30 s previews play inline
  * where Spotify provides them.
+ *
+ * The SDK is an Encrypted Media Extensions stream plus playback control and
+ * metadata. It deliberately exposes no PCM samples, AudioBuffer or file bytes,
+ * so a Spotify track cannot be fed to the local analysis / seamless-loop /
+ * stem-separation engine (which starts from decodeAudioData). What Spotify
+ * does expose is native track repeat and seek, used below for whole-track and
+ * A-B section looping. The sample-accurate engine still needs the same song
+ * as a user-supplied audio file.
  */
 
 // The fallback is the public Client ID of the "stems" Spotify developer app.
@@ -169,6 +177,47 @@ export interface SpotifyTrack {
   durationMs: number;
 }
 
+export interface SpotifySection {
+  startMs: number;
+  endMs: number;
+}
+
+/** Validate and clamp a user-selected A-B section. Sections need at least 1 s. */
+export function normalizeSpotifySection(startMs: number, endMs: number, durationMs: number): SpotifySection | null {
+  if (![startMs, endMs, durationMs].every(Number.isFinite) || durationMs <= 0) return null;
+  const start = Math.min(Math.max(0, Math.floor(startMs)), Math.max(0, durationMs - 1000));
+  const end = Math.min(Math.max(0, Math.floor(endMs)), durationMs);
+  return end - start >= 1000 ? { startMs: start, endMs: end } : null;
+}
+
+/** True when playback has reached the end of an A-B section. */
+export function spotifySectionDue(positionMs: number, section: SpotifySection | null): boolean {
+  return !!section && positionMs >= section.endMs;
+}
+
+export interface SpotifyPlaybackSnapshot {
+  paused: boolean;
+  positionMs: number;
+  durationMs: number;
+  trackId: string;
+  trackUri: string;
+  trackName: string;
+}
+
+/** Normalize the Web Playback SDK's player-state object. */
+export function spotifyPlaybackSnapshot(state: any): SpotifyPlaybackSnapshot | null {
+  const track = state?.track_window?.current_track;
+  if (!state || !track) return null;
+  return {
+    paused: !!state.paused,
+    positionMs: Math.max(0, state.position ?? 0),
+    durationMs: Math.max(0, state.duration ?? track.duration_ms ?? 0),
+    trackId: track.id ?? '',
+    trackUri: track.uri ?? '',
+    trackName: track.name ?? '',
+  };
+}
+
 /** Search tracks by name/artist. */
 export async function searchSpotifyTracks(query: string): Promise<SpotifyTrack[]> {
   const j = await api<{ tracks: { items: any[] } }>(`/search?q=${encodeURIComponent(query)}&type=track&limit=10`);
@@ -207,6 +256,7 @@ function loadPlaybackSdk(): Promise<any> {
 export interface SpotifyPlayerEvents {
   onReady?: (deviceId: string) => void;
   onState?: (playing: boolean, trackName: string) => void;
+  onSnapshot?: (snapshot: SpotifyPlaybackSnapshot) => void;
   onError?: (message: string) => void;
 }
 
@@ -235,6 +285,8 @@ export class SpotifyWebPlayer {
     });
     this.player.addListener('not_ready', () => { this.deviceId = null; });
     this.player.addListener('player_state_changed', (s: any) => {
+      const snapshot = spotifyPlaybackSnapshot(s);
+      if (snapshot) this.events.onSnapshot?.(snapshot);
       this.events.onState?.(!s?.paused, s?.track_window?.current_track?.name ?? '');
     });
     this.player.addListener('authentication_error', () => this.events.onError?.('Spotify authentication failed; please reconnect.'));
@@ -273,6 +325,25 @@ export class SpotifyWebPlayer {
       await new Promise((r) => setTimeout(r, 1500));
       await play();
     }
+  }
+
+  /** Spotify's own repeat control: the only true whole-track loop Spotify exposes. */
+  async setRepeatMode(state: 'track' | 'context' | 'off'): Promise<void> {
+    const deviceId = await this.ensureReady();
+    await api(`/me/player/repeat?state=${state}&device_id=${encodeURIComponent(deviceId)}`, { method: 'PUT' });
+  }
+
+  /** Seek inside the current Spotify stream (used to restart an A-B section). */
+  async seek(positionMs: number): Promise<void> {
+    if (!this.player) await this.connect();
+    if (!this.player?.seek) throw new Error('The Spotify player does not support seeking.');
+    await this.player.seek(Math.max(0, Math.round(positionMs)));
+  }
+
+  /** Current playback position / track, or null when nothing is loaded in the SDK. */
+  async getSnapshot(): Promise<SpotifyPlaybackSnapshot | null> {
+    if (!this.player?.getCurrentState) return null;
+    return spotifyPlaybackSnapshot(await this.player.getCurrentState());
   }
 
   pause() { this.player?.pause(); }

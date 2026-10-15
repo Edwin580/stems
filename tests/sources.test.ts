@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { parseLrc, lineAt } from '../src/lyrics/lrc';
 import { alignLoopsToLyrics } from '../src/lyrics/loopalign';
 import { parseYouTubeId } from '../src/sources/youtube';
-import { base64Url, codeChallenge } from '../src/sources/spotify';
+import {
+  base64Url, codeChallenge, normalizeSpotifySection, spotifyPlaybackSnapshot, spotifySectionDue,
+} from '../src/sources/spotify';
 import type { LoopCandidate } from '../src/engine/loops';
 
 describe('LRC parsing', () => {
@@ -62,6 +64,39 @@ describe('YouTube URL parsing', () => {
   for (const [input, expected] of cases) {
     it(`parses ${input}`, () => expect(parseYouTubeId(input)).toBe(expected));
   }
+});
+
+describe('Spotify-native looping', () => {
+  it('normalizes and clamps an A-B section', () => {
+    expect(normalizeSpotifySection(-500, 12_345, 10_000)).toEqual({ startMs: 0, endMs: 10_000 });
+    expect(normalizeSpotifySection(2_000, 8_000, 10_000)).toEqual({ startMs: 2_000, endMs: 8_000 });
+  });
+
+  it('rejects sections shorter than one second', () => {
+    expect(normalizeSpotifySection(2_000, 2_500, 10_000)).toBeNull();
+    expect(normalizeSpotifySection(2_000, 8_000, 0)).toBeNull();
+  });
+
+  it('fires only at or after the section end', () => {
+    const section = { startMs: 2_000, endMs: 8_000 };
+    expect(spotifySectionDue(7_999, section)).toBe(false);
+    expect(spotifySectionDue(8_000, section)).toBe(true);
+    expect(spotifySectionDue(8_000, null)).toBe(false);
+  });
+
+  it('normalizes Web Playback SDK state', () => {
+    const snapshot = spotifyPlaybackSnapshot({
+      paused: false,
+      position: 42_000,
+      duration: 180_000,
+      track_window: { current_track: { id: 'abc', uri: 'spotify:track:abc', name: 'Song', duration_ms: 180_000 } },
+    });
+    expect(snapshot).toEqual({
+      paused: false, positionMs: 42_000, durationMs: 180_000,
+      trackId: 'abc', trackUri: 'spotify:track:abc', trackName: 'Song',
+    });
+    expect(spotifyPlaybackSnapshot(null)).toBeNull();
+  });
 });
 
 describe('PKCE', () => {

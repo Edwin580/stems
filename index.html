@@ -36,7 +36,7 @@
 
       <section id="sources" class="card">
         <h2>More sources</h2>
-        <p class="hint">The endless engine works on uploaded files. YouTube and Spotify play in the app through their official players.</p>
+        <p class="hint">YouTube and Spotify play in the app through their official players. Spotify supports native track repeat and A-B section looping below; the sample-accurate endless/stem engine still needs the song as an uploaded audio file, because Spotify never exposes the stream's audio samples.</p>
         <div class="src-grid">
           <div class="src">
             <h3>YouTube</h3>
@@ -65,6 +65,18 @@
             <div class="row hidden" id="sp-player-row">
               <button id="sp-device">Enable in-app playback</button>
               <span id="sp-status" class="status"></span>
+            </div>
+            <div id="sp-loop" class="sp-loop hidden">
+              <label class="check"><input id="sp-loop-track" type="checkbox" /> Loop current track forever (Spotify repeat)</label>
+              <div class="sp-loop-times">
+                <button id="sp-loop-start" type="button">Set start</button>
+                <span id="sp-loop-start-v">Start 0:00</span>
+                <button id="sp-loop-end" type="button">Set end</button>
+                <span id="sp-loop-end-v">End —</span>
+              </div>
+              <label class="check"><input id="sp-loop-section" type="checkbox" /> Loop selected section (seek back to start)</label>
+              <div id="sp-loop-status" class="status">Play a Spotify track, then set loop points from the playing position.</div>
+              <button id="sp-load-file" type="button">Use a local file for seamless loops + stems</button>
             </div>
             <div id="sp-now" class="status"></div>
           </div>

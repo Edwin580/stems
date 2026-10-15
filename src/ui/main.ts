@@ -12,8 +12,9 @@ import { parseLrc, lineAt, type LyricLine } from '../lyrics/lrc';
 import { alignLoopsToLyrics, linesInLoop } from '../lyrics/loopalign';
 import { parseYouTubeId, searchYouTube, YouTubeSource } from '../sources/youtube';
 import {
-  handleSpotifyCallback, searchSpotifyTracks, spotifyConfigured, spotifyLogin,
-  spotifyLogout, spotifyToken, SpotifyWebPlayer, type SpotifyTrack,
+  handleSpotifyCallback, normalizeSpotifySection, searchSpotifyTracks, spotifyConfigured, spotifyLogin,
+  spotifyLogout, spotifySectionDue, spotifyToken, SpotifyWebPlayer, type SpotifyPlaybackSnapshot,
+  type SpotifySection, type SpotifyTrack,
 } from '../sources/spotify';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -664,12 +665,81 @@ const spPlayer = new SpotifyWebPlayer();
 const spAudio = new Audio();
 spAudio.preload = 'none';
 
+// Spotify-native looping. Spotify controls the encrypted stream, so this is
+// playback control only: native repeat for the whole track, or a seek back to
+// the A point for a section. It is not the local sample-accurate loop engine.
+let spCurrentTrack: SpotifyTrack | null = null;
+let spSnapshot: SpotifyPlaybackSnapshot | null = null;
+let spSectionStartMs = 0;
+let spSectionEndMs: number | null = null;
+let spSectionTimer: number | null = null;
+let spSectionSeeking = false;
+
+const spMs = (ms: number | null | undefined) => (ms == null ? '—' : fmt(ms / 1000));
+
+function spSection(): SpotifySection | null {
+  if (!spCurrentTrack) return null;
+  return normalizeSpotifySection(spSectionStartMs, spSectionEndMs ?? spCurrentTrack.durationMs, spCurrentTrack.durationMs);
+}
+
+function spRenderLoop() {
+  $('sp-loop-start-v').textContent = `Start ${spMs(spSectionStartMs)}`;
+  $('sp-loop-end-v').textContent = `End ${spMs(spSectionEndMs ?? spCurrentTrack?.durationMs)}`;
+}
+
+function spStopSectionLoop() {
+  if (spSectionTimer !== null) {
+    clearInterval(spSectionTimer);
+    spSectionTimer = null;
+  }
+}
+
+async function spCheckSectionLoop() {
+  if (!spCurrentTrack || spSectionSeeking) return;
+  const section = spSection();
+  if (!section) {
+    spStopSectionLoop();
+    $<HTMLInputElement>('sp-loop-section').checked = false;
+    $('sp-loop-status').textContent = 'That section is too short — set start and end at least 1 second apart.';
+    return;
+  }
+  try {
+    spSnapshot = (await spPlayer.getSnapshot()) ?? spSnapshot;
+  } catch { /* keep the last event snapshot */ }
+  if (!spSnapshot) return;
+  if (spSnapshot.trackId && spSnapshot.trackId !== spCurrentTrack.id) {
+    spStopSectionLoop();
+    $<HTMLInputElement>('sp-loop-section').checked = false;
+    $('sp-loop-status').textContent = 'Section loop stopped because the Spotify track changed.';
+    return;
+  }
+  if (spSnapshot.paused || !spotifySectionDue(spSnapshot.positionMs, section)) return;
+  spSectionSeeking = true;
+  try {
+    await spPlayer.seek(section.startMs);
+    $('sp-loop-status').textContent = `Looping section ${spMs(section.startMs)} → ${spMs(section.endMs)}.`;
+  } catch (err) {
+    spStopSectionLoop();
+    $<HTMLInputElement>('sp-loop-section').checked = false;
+    $('sp-loop-status').textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    spSectionSeeking = false;
+  }
+}
+
+function spStartSectionLoop() {
+  spStopSectionLoop();
+  spSectionTimer = window.setInterval(() => { void spCheckSectionLoop(); }, 100);
+  void spCheckSectionLoop();
+}
+
 async function spRefreshAuth() {
   const logged = !!(await spotifyToken().catch(() => null));
   $('sp-connect').classList.toggle('hidden', logged);
   $('sp-disconnect').classList.toggle('hidden', !logged);
   $('sp-search-row').classList.toggle('hidden', !logged);
   $('sp-player-row').classList.toggle('hidden', !logged);
+  $('sp-loop').classList.toggle('hidden', !logged);
   if (!logged && !spotifyConfigured()) {
     $('sp-now').textContent = 'Set VITE_SPOTIFY_CLIENT_ID in .env to connect Spotify.';
   } else if (!logged) {
@@ -680,11 +750,15 @@ async function spRefreshAuth() {
 spPlayer.events = {
   onReady: () => { $('sp-status').textContent = 'In-app playback ready.'; },
   onState: (playing, name) => { $('sp-now').textContent = playing ? `▶ ${name}` : name ? `❚❚ ${name}` : ''; },
+  onSnapshot: (snapshot) => { spSnapshot = snapshot; },
   onError: (m) => { $('sp-status').textContent = m; },
 };
 
 $('sp-connect').addEventListener('click', () => spotifyLogin().catch((e) => { $('sp-now').textContent = e.message; }));
 $('sp-disconnect').addEventListener('click', () => {
+  spStopSectionLoop();
+  spCurrentTrack = null;
+  spSnapshot = null;
   spPlayer.disconnect();
   spAudio.pause();
   spotifyLogout();
@@ -696,6 +770,79 @@ $('sp-device').addEventListener('click', async () => {
   $('sp-status').textContent = 'Starting player…';
   try { await spPlayer.ensureReady(); }
   catch (err) { $('sp-status').textContent = err instanceof Error ? err.message : String(err); }
+});
+
+$('sp-loop-track').addEventListener('change', async () => {
+  const input = $<HTMLInputElement>('sp-loop-track');
+  if (input.checked) {
+    $<HTMLInputElement>('sp-loop-section').checked = false;
+    spStopSectionLoop();
+  }
+  if (!spCurrentTrack) {
+    $('sp-loop-status').textContent = input.checked
+      ? 'Track repeat is armed — it will apply when you play a Spotify track.'
+      : 'Play a Spotify track, then set loop points from the playing position.';
+    return;
+  }
+  try {
+    await spPlayer.setRepeatMode(input.checked ? 'track' : 'off');
+    $('sp-loop-status').textContent = input.checked
+      ? `Looping ${spCurrentTrack.name} forever with Spotify track repeat.`
+      : 'Spotify track repeat is off.';
+  } catch (err) {
+    $('sp-loop-status').textContent = err instanceof Error ? err.message : String(err);
+  }
+});
+
+$('sp-loop-start').addEventListener('click', async () => {
+  try { spSnapshot = (await spPlayer.getSnapshot()) ?? spSnapshot; } catch { /* use last snapshot */ }
+  if (!spCurrentTrack || !spSnapshot) {
+    $('sp-loop-status').textContent = 'Play a Spotify track before setting the loop start.';
+    return;
+  }
+  spSectionStartMs = Math.floor(spSnapshot.positionMs);
+  spRenderLoop();
+  $('sp-loop-status').textContent = `Loop start set at ${spMs(spSectionStartMs)}.`;
+});
+
+$('sp-loop-end').addEventListener('click', async () => {
+  try { spSnapshot = (await spPlayer.getSnapshot()) ?? spSnapshot; } catch { /* use last snapshot */ }
+  if (!spCurrentTrack || !spSnapshot) {
+    $('sp-loop-status').textContent = 'Play a Spotify track before setting the loop end.';
+    return;
+  }
+  spSectionEndMs = Math.floor(spSnapshot.positionMs);
+  spRenderLoop();
+  $('sp-loop-status').textContent = `Loop end set at ${spMs(spSectionEndMs)}.`;
+});
+
+$('sp-loop-section').addEventListener('change', async () => {
+  const input = $<HTMLInputElement>('sp-loop-section');
+  if (!input.checked) {
+    spStopSectionLoop();
+    $('sp-loop-status').textContent = 'Section loop is off.';
+    return;
+  }
+  const section = spSection();
+  if (!spCurrentTrack || !section) {
+    input.checked = false;
+    $('sp-loop-status').textContent = !spCurrentTrack
+      ? 'Play a Spotify track before enabling a section loop.'
+      : 'Set start and end at least 1 second apart first.';
+    return;
+  }
+  $<HTMLInputElement>('sp-loop-track').checked = false;
+  try {
+    await spPlayer.setRepeatMode('off');
+  } catch { /* section seeking below is independent of Spotify repeat */ }
+  spRenderLoop();
+  spStartSectionLoop();
+  $('sp-loop-status').textContent = `Looping section ${spMs(section.startMs)} → ${spMs(section.endMs)}.`;
+});
+
+$('sp-load-file').addEventListener('click', () => {
+  $('sp-loop-status').textContent = 'Choose the same song as an audio file — it will be decoded and opened with seamless loops, stems and lyrics.';
+  fileInput.click();
 });
 
 // Cross-origin isolation (multi-threaded mode) blocks the embedded YouTube and
@@ -734,11 +881,28 @@ function playSpotifyResult(t: SpotifyTrack, ol: HTMLElement) {
   li.querySelector<HTMLButtonElement>('[data-act=play]')!.onclick = async () => {
     spPlayer.activate(); // must run inside the click, before any await
     $('sp-status').textContent = 'Starting playback…';
+    spStopSectionLoop();
+    $<HTMLInputElement>('sp-loop-section').checked = false;
+    spCurrentTrack = t;
+    spSnapshot = null;
+    spSectionStartMs = 0;
+    spSectionEndMs = t.durationMs;
+    spRenderLoop();
     try {
       spAudio.pause();
       await spPlayer.playUri(t.uri);
       $('sp-status').textContent = '';
       $('sp-now').textContent = `▶ ${t.name} — ${t.artists}`;
+      if ($<HTMLInputElement>('sp-loop-track').checked) {
+        try {
+          await spPlayer.setRepeatMode('track');
+          $('sp-loop-status').textContent = `Looping ${t.name} forever with Spotify track repeat.`;
+        } catch (err) {
+          $('sp-loop-status').textContent = `Playback started, but Spotify repeat could not be enabled: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      } else {
+        $('sp-loop-status').textContent = 'Set loop points from the playing position, or enable track repeat.';
+      }
     } catch (err) {
       $('sp-status').textContent = err instanceof Error ? err.message : String(err);
     }
