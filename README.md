@@ -23,6 +23,21 @@ The full design, the comparison with the original Infinite Jukebox, and the road
 ```
 src/engine/   pure DSP: fft, dsp, beats, features, similarity, graph, align, loops, planner, splicer, render
 src/audio/    Web Audio glue: AudioWorklet processor, analysis worker, Player
+src/lyrics/   LRC parsing, synced-line lookup, lyric-aligned loop ranking
+src/sources/  YouTube (IFrame player + optional Data API search), Spotify (PKCE auth, Web API search, Playback SDK)
 src/ui/       page controller, song-map visualiser, styles
 tests/        Vitest suite
 ```
+
+## Sources: YouTube and Spotify
+
+The endless engine needs a decoded audio buffer, so it works on uploaded files (and the demo track). YouTube and Spotify play through their official players, in the same app:
+
+- **YouTube** — paste any watch / youtu.be / embed / Shorts link; it plays embedded. Set `VITE_YOUTUBE_API_KEY` (Data API v3) for in-app search.
+- **Spotify** — connect with OAuth (PKCE, so no client secret in the browser). Search tracks, play full songs in-app with the Web Playback SDK (needs Premium), or play 30-second previews / open in Spotify without it.
+
+Setup: copy `.env.example` to `.env`, create a free app at https://developer.spotify.com/dashboard, and register the app's root URL as a Redirect URI (local dev: `http://127.0.0.1:5173/` and `http://localhost:5173/`; production: `https://edwin580.github.io/stems/`).
+
+## Lyrics
+
+Load a `.lrc` file alongside any song: lyrics highlight in sync with playback, clicking a line seeks to it, and the loop list can re-rank candidates so loops start on lyric lines.

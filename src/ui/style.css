@@ -90,3 +90,28 @@ button.round { width: 52px; height: 52px; border-radius: 50%; font-size: 20px; p
 .loops .meta b { color: var(--text); font-weight: 600; }
 .loops .acts { display: flex; gap: 6px; }
 .loops button { padding: 6px 10px; font-size: 13px; }
+h2 { margin: 0 0 6px; font-size: 16px; }
+h3 { margin: 0 0 8px; font-size: 14px; }
+.src-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.src { border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.src .row { justify-content: flex-start; margin-bottom: 10px; }
+.src input[type=text], .panel input[type=text] {
+  flex: 1; min-width: 140px; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px;
+}
+.status { color: var(--sub); font-size: 13px; margin-top: 6px; }
+#yt-player iframe { width: 100%; aspect-ratio: 16/9; border: 0; border-radius: 8px; }
+.mini-result { padding: 8px 0; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+.mini-result span { color: var(--sub); }
+.results { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
+.results li { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; flex-wrap: wrap; }
+.results .q img { border-radius: 6px; display: block; }
+.results .meta { flex: 1; min-width: 140px; color: var(--sub); font-size: 13px; }
+.results .meta b { color: var(--text); font-weight: 600; }
+.results .acts { display: flex; gap: 6px; }
+.results button { padding: 6px 10px; font-size: 13px; }
+.lyrics { max-height: 220px; overflow-y: auto; margin-top: 10px; display: grid; gap: 2px; }
+.lyrics .line { display: flex; gap: 10px; padding: 4px 8px; border-radius: 6px; color: var(--sub); cursor: pointer; font-size: 14px; }
+.lyrics .line .t { font-variant-numeric: tabular-nums; min-width: 44px; }
+.lyrics .line.active { color: var(--text); background: var(--loop-bg); font-weight: 600; }
+.panel .row { justify-content: flex-start; margin-bottom: 6px; }
