@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>stems — infinite seamless loops</title>
+    <script type="module" crossorigin src="./assets/index-Bu4DALxC.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CirWYRUC.css">
+  </head>
+  <body>
+    <header>
+      <div class="brand"><span class="logo">∞</span> stems</div>
+      <p class="tag">Drop a song. It plays forever — beat-matched, phase-aligned, no audible seams.</p>
+    </header>
+
+    <main>
+      <section id="drop" class="drop">
+        <input id="file" type="file" accept="audio/*" hidden />
+        <div class="drop-inner">
+          <div class="big">Drop an audio file here</div>
+          <div class="sub">MP3, WAV, FLAC, M4A, OGG — everything stays on your device</div>
+          <div class="row">
+            <button id="pick" class="primary">Choose file</button>
+            <button id="demo">Try the demo track</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="progress" class="card hidden">
+        <div class="progress-label"><span id="stage">Decoding</span><span id="pct">0%</span></div>
+        <div class="bar"><div id="bar-fill"></div></div>
+      </section>
+
+      <section id="error" class="card error hidden"></section>
+
+      <section id="sources" class="card">
+        <h2>More sources</h2>
+        <p class="hint">The endless engine works on uploaded files. YouTube and Spotify play in the app through their official players.</p>
+        <div class="src-grid">
+          <div class="src">
+            <h3>YouTube</h3>
+            <div class="row">
+              <input id="yt-url" type="text" placeholder="Paste a YouTube link…" aria-label="YouTube link" />
+              <button id="yt-load">Play</button>
+            </div>
+            <div class="row hidden" id="yt-search-row">
+              <input id="yt-q" type="text" placeholder="Search YouTube music…" aria-label="Search YouTube" />
+              <button id="yt-search">Search</button>
+            </div>
+            <div id="yt-player"></div>
+            <div id="yt-status" class="status"></div>
+          </div>
+          <div class="src">
+            <h3>Spotify</h3>
+            <div class="row">
+              <button id="sp-connect" class="primary">Connect Spotify</button>
+              <button id="sp-disconnect" class="ghost hidden">Disconnect</button>
+            </div>
+            <div class="row hidden" id="sp-search-row">
+              <input id="sp-q" type="text" placeholder="Search tracks…" aria-label="Search Spotify" />
+              <button id="sp-search">Search</button>
+            </div>
+            <ol id="sp-results" class="results"></ol>
+            <div class="row hidden" id="sp-player-row">
+              <button id="sp-device">Enable in-app playback</button>
+              <span id="sp-status" class="status"></span>
+            </div>
+            <div id="sp-now" class="status"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="app" class="hidden">
+        <div class="card now">
+          <div class="title-row">
+            <div>
+              <div id="track" class="track">—</div>
+              <div id="stats" class="stats"></div>
+            </div>
+            <button id="another" class="ghost">Load another</button>
+          </div>
+          <canvas id="viz" aria-label="Song map: waveform, beats and jump arcs. Click to seek."></canvas>
+          <div class="transport">
+            <button id="play" class="primary round" aria-label="Play">▶</button>
+            <div class="clock">
+              <div><span class="k">Listening</span> <span id="listened">0:00</span></div>
+              <div><span class="k">Position</span> <span id="posn">0:00</span></div>
+              <div><span class="k">Seams crossed</span> <span id="jumps">0</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabs" role="tablist">
+          <button role="tab" data-mode="endless" class="tab active">Endless</button>
+          <button role="tab" data-mode="loop" class="tab">Perfect loop</button>
+        </div>
+
+        <div id="panel-endless" class="card panel">
+          <p class="hint">Wanders through the song forever, jumping between musically identical moments. Every jump is bar-aligned and phase-matched at sample level.</p>
+          <label class="ctl">
+            <span>Jump about every <b id="bars-v">8</b> bars</span>
+            <input id="bars" type="range" min="1" max="32" step="1" value="8" />
+          </label>
+          <label class="ctl">
+            <span>Seam strictness <b id="thr-v"></b></span>
+            <input id="thr" type="range" min="0.05" max="0.6" step="0.01" value="0.3" />
+            <small>Stricter = fewer, cleaner jumps. <span id="thr-note"></span></small>
+          </label>
+          <label class="ctl">
+            <span>Crossfade <b id="fade-v">60 ms</b></span>
+            <input id="fade" type="range" min="5" max="200" step="5" value="60" />
+          </label>
+          <label class="check"><input id="barlock" type="checkbox" checked /> Only jump on bar lines</label>
+          <div class="export">
+            <label>Render <input id="mins" type="number" min="1" max="60" value="10" /> minutes</label>
+            <button id="render">Download WAV</button>
+          </div>
+        </div>
+
+        <div id="panel-loop" class="card panel hidden">
+          <p class="hint">One section, repeated forever through a single verified seam. Pick a loop; the best is selected automatically.</p>
+          <label class="check hidden" id="lyric-align-row"><input id="lyric-align" type="checkbox" /> Prefer loops that start on a lyric line</label>
+          <ol id="loops" class="loops"></ol>
+        </div>
+
+        <div class="card panel">
+          <h2>Lyrics</h2>
+          <p class="hint">Drop a <code>.lrc</code> file to see synced lyrics while the song plays. They also guide loop selection above.</p>
+          <div class="row">
+            <input id="lrc" type="file" accept=".lrc,.txt" hidden />
+            <button id="lrc-pick">Load .lrc file</button>
+            <span id="lrc-name" class="status"></span>
+          </div>
+          <div id="lyrics" class="lyrics" aria-live="off"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>Custom engine: onset/beat tracking · beat-synchronous chroma + MFCC · context-matched self-similarity · strongly-connected jump graph · cross-correlation seam alignment · correlation-aware crossfades in an AudioWorklet.</footer>
+  </body>
+</html>
