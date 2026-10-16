@@ -28,14 +28,16 @@ export interface YouTubeAudio {
 export interface Progress { (stage: string, fraction: number): void }
 
 const RELAY_KEY = 'stems.ytRelay';
+/** The site's own relay (relay/youtube-relay.js on Cloudflare). */
+export const DEFAULT_RELAY_URL = 'https://stems-youtube-relay.edwincortazo.workers.dev';
 
-/** The relay URL: what the person saved in the app, else the build-time default. */
+/** The relay URL: what the person saved in the app, else the build-time value, else the site's relay. */
 export function getRelayUrl(): string {
   try {
     const saved = localStorage.getItem(RELAY_KEY);
-    if (saved !== null) return saved;
+    if (saved) return saved;
   } catch { /* storage blocked */ }
-  return ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_YT_RELAY_URL ?? '').trim();
+  return ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_YT_RELAY_URL ?? '').trim() || DEFAULT_RELAY_URL;
 }
 
 export function setRelayUrl(url: string) {
