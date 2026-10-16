@@ -9,7 +9,7 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
-    <script type="module" crossorigin src="./assets/index-BcZRUvOB.js"></script>
+    <script type="module" crossorigin src="./assets/index-CbFQ1U32.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-GMfNDJYk.css">
   </head>
   <body>
@@ -48,13 +48,13 @@
           <button id="yt-botcheck" type="button" class="hidden">Pass the bot check</button>
           <details id="relay-box" class="relay">
             <summary>YouTube relay: <span id="relay-state">not set up</span></summary>
-            <p class="sub">A static page can't download from YouTube by itself (YouTube blocks other websites from reading its audio). A tiny free Cloudflare Worker you own fixes that; everything else happens in your browser.</p>
+            <p class="sub">A static page can't download from YouTube by itself (YouTube blocks other websites from reading its audio), so a tiny Cloudflare Worker fetches it; everything else happens in your browser. The site's own relay is used by default. To use your own instead, paste its URL here (clear it to go back).</p>
             <div class="yt-row">
               <input id="relay-url" type="url" inputmode="url" autocomplete="off" placeholder="https://stems-youtube-relay.you.workers.dev" aria-label="Relay URL" />
               <button id="relay-save" type="button">Save</button>
             </div>
             <ol class="steps">
-              <li>Create a free account at <a href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">Cloudflare</a>.</li>
+              <li>Optional, your own relay: create a free account at <a href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">Cloudflare</a>.</li>
               <li>Workers &amp; Pages → Create → Hello World → Deploy → Edit code.</li>
               <li>Paste <a href="https://github.com/Edwin580/stems/blob/main/relay/youtube-relay.js" target="_blank" rel="noopener">relay/youtube-relay.js</a>, Deploy, and paste the worker URL above.</li>
             </ol>
