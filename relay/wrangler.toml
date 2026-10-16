@@ -1,0 +1,8 @@
+# `npx wrangler deploy` from this folder deploys the relay as a Cloudflare Worker.
+name = "stems-youtube-relay"
+main = "youtube-relay.js"
+compatibility_date = "2025-09-01"
+
+[vars]
+# Browser origins allowed to use the relay (comma-separated). Add yours.
+ALLOWED_ORIGINS = "https://edwin580.github.io,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173"

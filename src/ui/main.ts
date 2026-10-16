@@ -11,7 +11,9 @@ import { Visualizer } from './visualizer';
 import { parseLrc, lineAt, type LyricLine } from '../lyrics/lrc';
 import { alignLoopsToLyrics, linesInLoop } from '../lyrics/loopalign';
 import { parseYouTubeId, searchYouTube, YouTubeSource } from '../sources/youtube';
-import { fetchYouTubeMp3, YouTubeBotCheckError } from '../sources/youtube-mp3';
+import { YouTubeBotCheckError } from '../sources/youtube-mp3';
+import { audioFileName, checkRelay, extensionForMime, fetchYouTubeAudio, getRelayUrl, NoRouteError, normalizeRelayUrl, setRelayUrl } from '../sources/yt-engine';
+import { encodeMp3InWorker } from '../audio/mp3-client';
 import {
   handleSpotifyCallback, normalizeSpotifySection, searchSpotifyTracks, spotifyConfigured, spotifyLogin,
   spotifyLogout, spotifySectionDue, spotifyToken, SpotifyWebPlayer, type SpotifyPlaybackSnapshot,
@@ -28,7 +30,7 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 
 let player: Player | null = null;
 let trackName = '';
-let tab: 'endless' | 'loop' | 'stems' = 'endless';
+let tab: 'endless' | 'loop' | 'stems' | 'lyrics' = 'endless';
 let pendingShare: ShareState | null = decodeShare(location.hash);
 const viz = new Visualizer($<HTMLCanvasElement>('viz'));
 
@@ -84,9 +86,13 @@ function waitForSource(p: Player, done: Promise<void>): Promise<void> {
   });
 }
 
-async function load(source: { file?: File; demo?: boolean }) {
+async function load(source: { file?: File; demo?: boolean; title?: string; meta?: SongMeta }) {
   show('error', false);
-  show('drop', false);
+  show('open', false);
+  songMeta = source.meta ?? null;
+  mp3Cache = null;
+  mp3Job = null; // a job for the previous song discards its own result
+  setMp3Button();
   try {
     const p = await ensurePlayer();
     p.source = null;
@@ -101,7 +107,7 @@ async function load(source: { file?: File; demo?: boolean }) {
     $('sep-note').textContent = 'HTDemucs downloads a ~180 MB model once (cached), then runs on your GPU (WebGPU) or CPU. Expect a few minutes per song on CPU.';
     let loaded: Promise<void>;
     if (source.file) {
-      trackName = source.file.name.replace(/\.[^.]+$/, '');
+      trackName = source.title || source.file.name.replace(/\.[^.]+$/, '');
       loaded = p.loadFile(source.file);
     } else {
       trackName = 'Demo track (synthesised in your browser)';
@@ -113,7 +119,7 @@ async function load(source: { file?: File; demo?: boolean }) {
     await loaded;
   } catch (err) {
     show('app', false);
-    show('drop');
+    show('open');
     $('error').textContent = `Couldn't process that file: ${err instanceof Error ? err.message : String(err)}`;
     show('error');
   }
@@ -190,12 +196,12 @@ for (const id of ['bars', 'thr', 'fade', 'phrase', 'barlock', 'autofade', 'loudn
 }
 $('lyric-align').addEventListener('change', () => renderLoops());
 
-function setTab(t: 'endless' | 'loop' | 'stems') {
+function setTab(t: typeof tab) {
   tab = t;
   document.querySelectorAll<HTMLButtonElement>('.tab').forEach((b) => b.classList.toggle('active', b.dataset.mode === t));
-  for (const k of ['endless', 'loop', 'stems']) show(`panel-${k}`, k === t);
-  // The stems tab doesn't change the playback mode.
-  if (t !== 'stems') player?.updateSettings({ mode: t });
+  for (const k of ['endless', 'loop', 'stems', 'lyrics']) show(`panel-${k}`, k === t);
+  // Only Endless and Perfect loop change the playback mode.
+  if (t === 'endless' || t === 'loop') player?.updateSettings({ mode: t });
   refreshGraph();
 }
 document.querySelectorAll<HTMLButtonElement>('.tab').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.mode as typeof tab)));
@@ -494,7 +500,10 @@ function updateMediaSession() {
 // ---- File input + drag and drop --------------------------------------------------
 const fileInput = $<HTMLInputElement>('file');
 $('pick').addEventListener('click', () => fileInput.click());
-$('another').addEventListener('click', () => { player?.pause(); updatePlayButton(); fileInput.click(); });
+$('another').addEventListener('click', () => {
+  show('open');
+  $('open').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
 fileInput.addEventListener('change', () => { const f = fileInput.files?.[0]; if (f) load({ file: f }); fileInput.value = ''; });
 $('demo').addEventListener('click', () => load({ demo: true }));
 const drop = $('drop');
@@ -619,7 +628,7 @@ const ytKey = import.meta.env.VITE_YOUTUBE_API_KEY as string | undefined;
 if (ytKey) $('yt-search-row').classList.remove('hidden');
 
 async function ytPlayId(id: string) {
-  const status = $('yt-status');
+  const status = $('yt-embed-status');
   status.textContent = 'Loading YouTube player…';
   try {
     yt ??= new YouTubeSource($('yt-player'));
@@ -636,57 +645,126 @@ async function ytPlayId(id: string) {
 }
 
 $('yt-load').addEventListener('click', () => {
-  const id = parseYouTubeId($<HTMLInputElement>('yt-url').value);
-  if (!id) { $('yt-status').textContent = 'That doesn\u2019t look like a YouTube link or video ID.'; return; }
+  const id = parseYouTubeId($<HTMLInputElement>('yt-embed-url').value);
+  if (!id) { $('yt-embed-status').textContent = 'That doesn’t look like a YouTube link or video ID.'; return; }
   ytPlayId(id);
 });
 
-// YouTube -> MP3 -> straight into the same load path as an uploaded file:
-// decode, beat analysis, endless loops and stem separation all apply.
-let ytMp3File: File | null = null;
+// ---- YouTube link → audio → stem engine (+ MP3) -------------------------------
+// The engine runs in this page (src/sources/yt-engine.ts); the relay only
+// fetches the bytes YouTube won't hand to other websites.
+
+interface SongMeta { title: string; artist: string; sourceUrl: string }
+let songMeta: SongMeta | null = null;
+let mp3Cache: { blob: Blob; name: string } | null = null;
+let mp3Job: Promise<void> | null = null;
 let ytBotCheckInstance = '';
-$('yt-mp3').addEventListener('click', async () => {
+
+function setYtProgress(stage: string, f: number | null) {
+  show('yt-progress', true);
+  $('yt-stage').textContent = stage;
+  $('yt-pct').textContent = f == null ? '' : `${Math.round(f * 100)}%`;
+  $('yt-bar').style.width = `${Math.round((f ?? 0) * 100)}%`;
+}
+
+function renderRelayState(msg?: string) {
+  const url = getRelayUrl();
+  $('relay-state').textContent = msg ?? (url ? new URL(normalizeRelayUrl(url)).host : 'not set up');
+}
+
+const relayInput = $<HTMLInputElement>('relay-url');
+relayInput.value = getRelayUrl();
+renderRelayState();
+$('relay-save').addEventListener('click', async () => {
+  setRelayUrl(relayInput.value);
+  relayInput.value = getRelayUrl();
+  if (!relayInput.value) { renderRelayState(); return; }
+  renderRelayState('checking…');
+  const problem = await checkRelay(relayInput.value);
+  renderRelayState(problem ? `problem: ${problem}` : `${new URL(relayInput.value).host} ✓`);
+});
+
+$<HTMLFormElement>('yt-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
   const status = $('yt-status');
   const btn = $<HTMLButtonElement>('yt-mp3');
   const input = $<HTMLInputElement>('yt-url').value;
-  if (!parseYouTubeId(input)) { status.textContent = 'That doesn\u2019t look like a YouTube link or video ID.'; return; }
+  const videoId = parseYouTubeId(input);
+  if (!videoId) { status.textContent = 'That doesn’t look like a YouTube link or video ID.'; return; }
   btn.disabled = true;
   show('yt-botcheck', false);
-  status.textContent = 'Converting to MP3… (fetching the audio and converting — this can take a bit)';
+  status.textContent = '';
   try {
-    ytMp3File = await fetchYouTubeMp3(input, {
-      // The same-origin /api endpoint only exists in local dev (Vite proxy
-      // to `npm run yt-server`) or on a host that routes it; on static
-      // hosting it would just 404, so production goes to the public
-      // fallback directly.
+    const audio = await fetchYouTubeAudio(input, {
+      onProgress: setYtProgress,
+      // Same-origin /api only exists in local dev (Vite proxy to `npm run yt-server`).
       trySameOrigin: import.meta.env.DEV,
-      decodeAudio: (data) => new OfflineAudioContext(2, 1, 44_100).decodeAudioData(data),
     });
-    show('yt-mp3-download', true);
-    status.textContent = `Got ${ytMp3File.name} — loading it into the stem engine…`;
-    await load({ file: ytMp3File });
-    status.textContent = `Loaded ${ytMp3File.name} into the stem engine. Open the Stems tab to separate it.`;
+    setYtProgress('Decoding and analysing…', 1);
+    const file = new File([audio.bytes], audioFileName(audio, extensionForMime(audio.mime)), { type: audio.mime.split(';')[0] });
+    const title = [audio.author, audio.title].filter(Boolean).join(' – ') || `YouTube ${videoId}`;
+    await load({ file, title, meta: { title: audio.title || title, artist: audio.author, sourceUrl: `https://youtu.be/${videoId}` } });
+    show('yt-progress', false);
+    status.textContent = '';
+    if (player?.source) void startMp3();
   } catch (err) {
+    show('yt-progress', false);
+    show('open');
     status.textContent = err instanceof Error ? err.message : String(err);
     if (err instanceof YouTubeBotCheckError) {
       ytBotCheckInstance = err.instance;
       show('yt-botcheck', true);
     }
+    if (err instanceof NoRouteError) ($('relay-box') as HTMLDetailsElement).open = true;
   } finally {
     btn.disabled = false;
   }
 });
 $('yt-botcheck').addEventListener('click', () => {
   if (ytBotCheckInstance) window.open(ytBotCheckInstance, '_blank', 'noopener');
-  $('yt-status').textContent = 'Opened the converter site in a new tab. Once it loads, come back here and press “Convert to MP3 & use for stems” again.';
+  $('yt-status').textContent = 'Opened that site in a new tab. Pass its check there, then press Open again.';
 });
-$('yt-mp3-download').addEventListener('click', () => {
-  if (ytMp3File) download(ytMp3File, ytMp3File.name);
+
+// ---- MP3 of the current song ---------------------------------------------------
+
+function mp3Name(): string {
+  return `${(songMeta ? [songMeta.artist, songMeta.title].filter(Boolean).join(' - ') : trackName).replace(/[\\/:*?"<>|]/g, '').trim() || 'stems'}.mp3`;
+}
+
+function setMp3Button(text?: string, busy = false) {
+  const b = $<HTMLButtonElement>('dl-mp3');
+  b.textContent = text ?? (mp3Cache ? 'Download MP3 ✓' : 'Download MP3');
+  b.disabled = busy;
+}
+
+/** Encode the loaded song to a tagged MP3 in a worker (once per song). */
+function startMp3(): Promise<void> {
+  const p = player;
+  if (!p?.source) return Promise.resolve();
+  if (mp3Job) return mp3Job;
+  const source = p.source;
+  const tags = songMeta ? { title: songMeta.title, artist: songMeta.artist, sourceUrl: songMeta.sourceUrl, comment: 'Made with stems' } : { title: trackName, comment: 'Made with stems' };
+  setMp3Button('Encoding MP3…', true);
+  mp3Job = encodeMp3InWorker(source.channels, source.sampleRate, tags, (f) => setMp3Button(`Encoding MP3… ${Math.round(f * 100)}%`, true))
+    .then((blob) => {
+      if (player?.source !== source) return; // a different song was loaded meanwhile
+      mp3Cache = { blob, name: mp3Name() };
+      setMp3Button();
+    })
+    .catch((err) => { setMp3Button(`MP3 failed: ${err instanceof Error ? err.message : String(err)}`); })
+    .finally(() => { mp3Job = null; });
+  return mp3Job;
+}
+
+$('dl-mp3').addEventListener('click', async () => {
+  if (!mp3Cache) await startMp3();
+  if (mp3Cache) download(mp3Cache.blob, mp3Cache.name);
 });
+
 $('yt-search').addEventListener('click', async () => {
   const q = $<HTMLInputElement>('yt-q').value.trim();
   if (!q) return;
-  const status = $('yt-status');
+  const status = $('yt-embed-status');
   status.textContent = 'Searching…';
   try {
     const results = await searchYouTube(q, ytKey);

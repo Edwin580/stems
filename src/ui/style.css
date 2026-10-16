@@ -81,7 +81,7 @@ button.round { width: 52px; height: 52px; border-radius: 50%; font-size: 20px; p
 .ctl small { color: var(--sub); }
 .check { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
 .export { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
-.export input { width: 64px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
+.export input[type=number] { width: 64px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
 .loops { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .loops li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; flex-wrap: wrap; }
 .loops li.sel { border-color: var(--accent); background: var(--loop-bg); }
@@ -141,3 +141,38 @@ h3 { margin: 0 0 8px; font-size: 14px; }
 .sp-loop-times { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--sub); font-size: 13px; }
 .notice-inline { border: 1px solid var(--accent); border-radius: 10px; padding: 8px 12px; color: var(--text); font-size: 13px; }
 .notice-inline button { margin-left: 8px; padding: 4px 10px; font-size: 13px; }
+
+/* ---- Open: file or YouTube link ---------------------------------------------- */
+.open { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+@media (max-width: 760px) { .open { grid-template-columns: 1fr; } }
+.open .drop { display: flex; align-items: center; justify-content: center; padding: 32px 16px; }
+.yt-open { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 22px 20px; display: grid; gap: 10px; align-content: start; }
+.yt-open .big { font-size: 20px; font-weight: 600; }
+.yt-open .sub { color: var(--sub); font-size: 13px; margin: -4px 0 4px; }
+.yt-open .aprog { margin: 0; }
+.yt-open .status:empty { display: none; }
+.yt-open #yt-botcheck { justify-self: start; }
+.yt-row { display: flex; gap: 8px; }
+.yt-row input { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; }
+.yt-row input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+#yt-bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.relay { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 4px; }
+.relay summary { cursor: pointer; color: var(--sub); font-size: 13px; }
+.relay[open] summary { margin-bottom: 8px; }
+.relay .sub { margin: 0 0 10px; }
+.steps { margin: 10px 0 0; padding-left: 20px; color: var(--sub); font-size: 13px; display: grid; gap: 3px; }
+.yt-open a { color: var(--accent); }
+
+/* ---- Official players (collapsed by default) --------------------------------- */
+.listen > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+.listen > summary::-webkit-details-marker { display: none; }
+.listen > summary h2 { display: inline; margin: 0; }
+.listen > summary::before { content: '▸'; color: var(--sub); width: 1em; }
+.listen[open] > summary::before { content: '▾'; }
+.listen[open] > summary { margin-bottom: 10px; }
+
+/* ---- Small fixes --------------------------------------------------------------- */
+.title-acts { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; }
+.export .check { margin: 0; }
+.open > * { min-width: 0; }
+.yt-open > *, .relay > * { min-width: 0; }

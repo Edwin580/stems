@@ -20,73 +20,48 @@
     <main>
       <section id="share-banner" class="card notice hidden"></section>
 
-      <section id="drop" class="drop">
-        <input id="file" type="file" accept="audio/*" hidden />
-        <div class="drop-inner">
-          <div class="big">Drop an audio file here</div>
-          <div class="sub">MP3, WAV, FLAC, M4A, OGG — everything stays on your device</div>
-          <div class="row">
-            <button id="pick" class="primary">Choose file</button>
-            <button id="demo">Try the demo track</button>
+      <section id="open" class="open">
+        <div id="drop" class="drop">
+          <input id="file" type="file" accept="audio/*" hidden />
+          <div class="drop-inner">
+            <div class="big">Drop an audio file</div>
+            <div class="sub">MP3, WAV, FLAC, M4A, OGG — stays on your device</div>
+            <div class="row">
+              <button id="pick" class="primary">Choose file</button>
+              <button id="demo">Try the demo</button>
+            </div>
           </div>
         </div>
+        <form id="yt-form" class="yt-open" novalidate>
+          <label for="yt-url" class="big">or paste a YouTube link</label>
+          <div class="sub">The audio is fetched, converted to MP3 and opened here with seamless loops and stems.</div>
+          <div class="yt-row">
+            <input id="yt-url" type="url" inputmode="url" autocomplete="off" placeholder="https://youtu.be/…" aria-label="YouTube link" />
+            <button id="yt-mp3" class="primary" type="submit">Open</button>
+          </div>
+          <div id="yt-progress" class="aprog hidden">
+            <div class="progress-label"><span id="yt-stage">Starting</span><span id="yt-pct"></span></div>
+            <div class="bar"><div id="yt-bar"></div></div>
+          </div>
+          <div id="yt-status" class="status" role="status"></div>
+          <button id="yt-botcheck" type="button" class="hidden">Pass the bot check</button>
+          <details id="relay-box" class="relay">
+            <summary>YouTube relay: <span id="relay-state">not set up</span></summary>
+            <p class="sub">A static page can't download from YouTube by itself (YouTube blocks other websites from reading its audio). A tiny free Cloudflare Worker you own fixes that; everything else happens in your browser.</p>
+            <div class="yt-row">
+              <input id="relay-url" type="url" inputmode="url" autocomplete="off" placeholder="https://stems-youtube-relay.you.workers.dev" aria-label="Relay URL" />
+              <button id="relay-save" type="button">Save</button>
+            </div>
+            <ol class="steps">
+              <li>Create a free account at <a href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">Cloudflare</a>.</li>
+              <li>Workers &amp; Pages → Create → Hello World → Deploy → Edit code.</li>
+              <li>Paste <a href="https://github.com/Edwin580/stems/blob/main/relay/youtube-relay.js" target="_blank" rel="noopener">relay/youtube-relay.js</a>, Deploy, and paste the worker URL above.</li>
+            </ol>
+          </details>
+        </form>
       </section>
 
       <section id="error" class="card error hidden"></section>
-
-      <section id="sources" class="card">
-        <h2>More sources</h2>
-        <p class="hint">YouTube and Spotify play in the app through their official players. A YouTube link can also be converted to MP3 in the app (public fallback, or the local converter endpoint — <code>npm run yt-server</code>, see README) and then feeds the endless/stem engine directly, like an uploaded file. Spotify supports native track repeat and A-B section looping below; the sample-accurate endless/stem engine still needs the song as an uploaded audio file, because Spotify never exposes the stream's audio samples.</p>
-        <div class="src-grid">
-          <div class="src">
-            <h3>YouTube</h3>
-            <div class="row">
-              <input id="yt-url" type="text" placeholder="Paste a YouTube link…" aria-label="YouTube link" />
-              <button id="yt-load">Play</button>
-            </div>
-            <div class="row">
-              <button id="yt-mp3" class="primary">Convert to MP3 &amp; use for stems</button>
-              <button id="yt-mp3-download" class="ghost hidden">Download MP3</button>
-              <button id="yt-botcheck" class="ghost hidden">Pass the bot check</button>
-            </div>
-            <div class="row hidden" id="yt-search-row">
-              <input id="yt-q" type="text" placeholder="Search YouTube music…" aria-label="Search YouTube" />
-              <button id="yt-search">Search</button>
-            </div>
-            <div id="yt-player"></div>
-            <div id="yt-status" class="status"></div>
-          </div>
-          <div class="src">
-            <h3>Spotify</h3>
-            <div class="row">
-              <button id="sp-connect" class="primary">Connect Spotify</button>
-              <button id="sp-disconnect" class="ghost hidden">Disconnect</button>
-            </div>
-            <div class="row hidden" id="sp-search-row">
-              <input id="sp-q" type="text" placeholder="Search tracks…" aria-label="Search Spotify" />
-              <button id="sp-search">Search</button>
-            </div>
-            <ol id="sp-results" class="results"></ol>
-            <div class="row hidden" id="sp-player-row">
-              <button id="sp-device">Enable in-app playback</button>
-              <span id="sp-status" class="status"></span>
-            </div>
-            <div id="sp-loop" class="sp-loop hidden">
-              <label class="check"><input id="sp-loop-track" type="checkbox" /> Loop current track forever (Spotify repeat)</label>
-              <div class="sp-loop-times">
-                <button id="sp-loop-start" type="button">Set start</button>
-                <span id="sp-loop-start-v">Start 0:00</span>
-                <button id="sp-loop-end" type="button">Set end</button>
-                <span id="sp-loop-end-v">End —</span>
-              </div>
-              <label class="check"><input id="sp-loop-section" type="checkbox" /> Loop selected section (seek back to start)</label>
-              <div id="sp-loop-status" class="status">Play a Spotify track, then set loop points from the playing position.</div>
-              <button id="sp-load-file" type="button">Use a local file for seamless loops + stems</button>
-            </div>
-            <div id="sp-now" class="status"></div>
-          </div>
-        </div>
-      </section>
 
       <section id="app" class="hidden">
         <div class="card now">
@@ -95,7 +70,10 @@
               <div id="track" class="track">—</div>
               <div id="stats" class="stats"></div>
             </div>
-            <button id="another" class="ghost">Load another</button>
+            <div class="title-acts">
+              <button id="dl-mp3" type="button">Download MP3</button>
+              <button id="another" class="ghost">Load another</button>
+            </div>
           </div>
           <div id="aprog" class="aprog">
             <div class="progress-label"><span id="stage">Decoding</span><span id="pct">0%</span></div>
@@ -132,6 +110,7 @@
           <button role="tab" data-mode="endless" class="tab active">Endless</button>
           <button role="tab" data-mode="loop" class="tab">Perfect loop</button>
           <button role="tab" data-mode="stems" class="tab">Stems</button>
+          <button role="tab" data-mode="lyrics" class="tab">Lyrics</button>
         </div>
 
         <div id="panel-endless" class="card panel">
@@ -201,9 +180,8 @@
           </details>
         </div>
 
-        <div class="card panel">
-          <h2>Lyrics</h2>
-          <p class="hint">Drop a <code>.lrc</code> file to see synced lyrics while the song plays. They also guide loop selection above.</p>
+        <div id="panel-lyrics" class="card panel hidden">
+          <p class="hint">Load a <code>.lrc</code> file to see synced lyrics as the song plays and to prefer loops that start on a lyric line.</p>
           <div class="row">
             <input id="lrc" type="file" accept=".lrc,.txt" hidden />
             <button id="lrc-pick">Load .lrc file</button>
@@ -212,6 +190,55 @@
           <div id="lyrics" class="lyrics" aria-live="off"></div>
         </div>
       </section>
+
+      <details id="sources" class="card listen">
+        <summary><h2>Listen with the official players</h2></summary>
+        <p class="hint">YouTube and Spotify play here in their own players. Those players never expose the audio, so seamless loops and stems need the song opened above; Spotify can still repeat a track or loop a section natively.</p>
+        <div class="src-grid">
+          <div class="src">
+            <h3>YouTube</h3>
+            <div class="row">
+              <input id="yt-embed-url" type="text" placeholder="YouTube link to play…" aria-label="YouTube link to play" />
+              <button id="yt-load">Play</button>
+            </div>
+            <div class="row hidden" id="yt-search-row">
+              <input id="yt-q" type="text" placeholder="Search YouTube music…" aria-label="Search YouTube" />
+              <button id="yt-search">Search</button>
+            </div>
+            <div id="yt-player"></div>
+            <div id="yt-embed-status" class="status"></div>
+          </div>
+          <div class="src">
+            <h3>Spotify</h3>
+            <div class="row">
+              <button id="sp-connect" class="primary">Connect Spotify</button>
+              <button id="sp-disconnect" class="ghost hidden">Disconnect</button>
+            </div>
+            <div class="row hidden" id="sp-search-row">
+              <input id="sp-q" type="text" placeholder="Search tracks…" aria-label="Search Spotify" />
+              <button id="sp-search">Search</button>
+            </div>
+            <ol id="sp-results" class="results"></ol>
+            <div class="row hidden" id="sp-player-row">
+              <button id="sp-device">Enable in-app playback</button>
+              <span id="sp-status" class="status"></span>
+            </div>
+            <div id="sp-loop" class="sp-loop hidden">
+              <label class="check"><input id="sp-loop-track" type="checkbox" /> Loop current track forever (Spotify repeat)</label>
+              <div class="sp-loop-times">
+                <button id="sp-loop-start" type="button">Set start</button>
+                <span id="sp-loop-start-v">Start 0:00</span>
+                <button id="sp-loop-end" type="button">Set end</button>
+                <span id="sp-loop-end-v">End —</span>
+              </div>
+              <label class="check"><input id="sp-loop-section" type="checkbox" /> Loop selected section (seek back to start)</label>
+              <div id="sp-loop-status" class="status">Play a Spotify track, then set loop points from the playing position.</div>
+              <button id="sp-load-file" type="button">Use a local file for seamless loops + stems</button>
+            </div>
+            <div id="sp-now" class="status"></div>
+          </div>
+        </div>
+      </details>
     </main>
 
     <footer>

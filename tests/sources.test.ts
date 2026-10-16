@@ -174,12 +174,12 @@ describe('YouTube -> MP3 conversion', () => {
     expect(pickInvidiousAudio([{ type: 'video/mp4', url: 'c' }])).toBeNull();
   });
 
-  it('encodes PCM to an MP3 blob with a frame sync', () => {
+  it('encodes PCM to an MP3 blob with a frame sync', async () => {
     const pcm: DecodableAudio = {
       numberOfChannels: 1, sampleRate: 22_050, length: 2_205,
       getChannelData: () => Float32Array.from({ length: 2_205 }, (_, i) => Math.sin(i / 10) * 0.4),
     };
-    const blob = encodeMp3(pcm);
+    const blob = await encodeMp3(pcm);
     expect(blob.type).toBe('audio/mpeg');
     expect(blob.size).toBeGreaterThan(100);
   });

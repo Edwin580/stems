@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build:wasm": "node scripts/build-wasm.mjs"
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "relay": "node relay/dev-server.mjs"
   },
   "devDependencies": {
     "assemblyscript": "0.27.31",
@@ -20,7 +21,7 @@
     "vitest": "2.1.8"
   },
   "dependencies": {
-    "@breezystack/lamejs": "^1.2.7",
+    "@breezystack/lamejs": "1.2.7",
     "onnxruntime-web": "1.20.1"
   }
 }

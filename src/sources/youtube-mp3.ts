@@ -29,7 +29,6 @@
  *      browser with lamejs, so every path yields an actual .mp3 File.
  * The resulting File goes through the exact same load path as an upload.
  */
-import { Mp3Encoder } from '@breezystack/lamejs';
 import { parseYouTubeId } from './youtube';
 
 export const YT_MP3_DEFAULT_PATH = '/api/youtube-mp3';
@@ -114,33 +113,16 @@ export interface DecodableAudio {
   getChannelData(channel: number): Float32Array;
 }
 
-function floatTo16(arr: Float32Array, offset: number, len: number): Int16Array {
-  const out = new Int16Array(len);
-  for (let i = 0; i < len; i++) {
-    const s = Math.max(-1, Math.min(1, arr[offset + i]));
-    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  return out;
-}
-
-/** Encode decoded PCM to an MP3 blob (192 kbps, lamejs). Pure and testable. */
-export function encodeMp3(audio: DecodableAudio): Blob {
-  const channels = Math.min(2, Math.max(1, audio.numberOfChannels));
-  const enc = new Mp3Encoder(channels, audio.sampleRate, 192);
-  const left = audio.getChannelData(0);
-  const right = channels > 1 ? audio.getChannelData(1) : left;
-  const parts: Uint8Array[] = [];
-  const BLOCK = 1152;
-  for (let i = 0; i < audio.length; i += BLOCK) {
-    const n = Math.min(BLOCK, audio.length - i);
-    const out = channels > 1
-      ? enc.encodeBuffer(floatTo16(left, i, n), floatTo16(right, i, n))
-      : enc.encodeBuffer(floatTo16(left, i, n));
-    if (out.length) parts.push(out);
-  }
-  const tail = enc.flush();
-  if (tail.length) parts.push(tail);
-  return new Blob(parts as BlobPart[], { type: 'audio/mpeg' });
+/**
+ * Encode decoded PCM to an MP3 blob (192 kbps). Thin wrapper over
+ * src/audio/mp3.ts, loaded on demand so the encoder stays out of the page
+ * bundle (the app encodes in src/audio/mp3.worker.ts).
+ */
+export async function encodeMp3(audio: DecodableAudio): Promise<Blob> {
+  const { encodeMp3: encodePcmToMp3 } = await import('../audio/mp3');
+  const n = Math.min(2, Math.max(1, audio.numberOfChannels));
+  const channels = Array.from({ length: n }, (_, c) => audio.getChannelData(c));
+  return encodePcmToMp3(channels, audio.sampleRate, { kbps: 192 });
 }
 
 export interface YouTubeMp3Options {
@@ -160,9 +142,9 @@ export interface YouTubeMp3Options {
   fetchFn?: typeof fetch;
 }
 
-interface RawAudio { blob: Blob; title: string | null; }
+export interface RawAudio { blob: Blob; title: string | null; }
 
-async function fromConverterEndpoint(endpoint: string, videoId: string, doFetch: typeof fetch): Promise<RawAudio> {
+export async function fromConverterEndpoint(endpoint: string, videoId: string, doFetch: typeof fetch): Promise<RawAudio> {
   let res: Response;
   try {
     res = await doFetch(youtubeMp3RequestUrl(endpoint, videoId));
@@ -182,7 +164,7 @@ async function fromConverterEndpoint(endpoint: string, videoId: string, doFetch:
   return { blob, title: title ? decodeURIComponent(title) : null };
 }
 
-async function fromInvidious(instance: string, videoId: string, doFetch: typeof fetch): Promise<RawAudio> {
+export async function fromInvidious(instance: string, videoId: string, doFetch: typeof fetch): Promise<RawAudio> {
   const api = `${instance}/api/v1/videos/${videoId}?local=true&fields=title,adaptiveFormats`;
   const res = await doFetch(api);
   if (!res.ok) throw new Error(`lookup failed (${res.status})`);
@@ -240,7 +222,7 @@ export async function fetchYouTubeMp3(input: string, opts: YouTubeMp3Options = {
   }
   if (opts.decodeAudio) {
     const decoded = await opts.decodeAudio(await raw.blob.arrayBuffer());
-    const mp3 = encodeMp3(decoded);
+    const mp3 = await encodeMp3(decoded);
     return new File([mp3], mp3FileName(raw.title, videoId), { type: 'audio/mpeg' });
   }
   // No decoder available: hand back the original audio — the player decodes
