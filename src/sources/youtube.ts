@@ -2,8 +2,11 @@
  * YouTube as a source: paste a link, play it in the app.
  *
  * Honest limitation: YouTube audio can't be decoded into a buffer in the
- * browser, so the endless-loop engine only applies to uploaded files. YouTube
- * tracks play through the official IFrame player, embedded in the app.
+ * browser, so through this player alone the endless-loop engine only applies
+ * to uploaded files. YouTube tracks play through the official IFrame player,
+ * embedded in the app. To feed a YouTube link to the engine, see
+ * youtube-mp3.ts: a small converter endpoint (yt-dlp + ffmpeg) turns the
+ * link into an MP3 the app loads exactly like an uploaded file.
  * Optional: set VITE_YOUTUBE_API_KEY for in-app search (Data API v3).
  */
 

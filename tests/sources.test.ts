@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parseLrc, lineAt } from '../src/lyrics/lrc';
 import { alignLoopsToLyrics } from '../src/lyrics/loopalign';
 import { parseYouTubeId } from '../src/sources/youtube';
+import { fetchYouTubeMp3, mp3FileName, youtubeMp3Endpoint, youtubeMp3RequestUrl } from '../src/sources/youtube-mp3';
 import {
   base64Url, codeChallenge, normalizeSpotifySection, spotifyPlaybackSnapshot, spotifySectionDue,
 } from '../src/sources/spotify';
@@ -64,6 +65,59 @@ describe('YouTube URL parsing', () => {
   for (const [input, expected] of cases) {
     it(`parses ${input}`, () => expect(parseYouTubeId(input)).toBe(expected));
   }
+});
+
+describe('YouTube -> MP3 conversion', () => {
+  it('resolves the converter endpoint', () => {
+    expect(youtubeMp3Endpoint()).toBe('/api/youtube-mp3');
+    expect(youtubeMp3Endpoint('')).toBe('/api/youtube-mp3');
+    expect(youtubeMp3Endpoint('https://convert.example.com/api')).toBe('https://convert.example.com/api/youtube-mp3');
+    expect(youtubeMp3Endpoint('https://convert.example.com/api/youtube-mp3')).toBe('https://convert.example.com/api/youtube-mp3');
+    expect(youtubeMp3Endpoint('https://convert.example.com/api/')).toBe('https://convert.example.com/api/youtube-mp3');
+  });
+
+  it('builds the request URL from a video id', () => {
+    expect(youtubeMp3RequestUrl('/api/youtube-mp3', 'dQw4w9WgXcQ')).toBe('/api/youtube-mp3?v=dQw4w9WgXcQ');
+  });
+
+  it('sanitizes titles into safe mp3 file names', () => {
+    expect(mp3FileName('Never Gonna Give You Up', 'dQw4w9WgXcQ')).toBe('Never Gonna Give You Up.mp3');
+    expect(mp3FileName('a/b: c? "d" <e>', 'dQw4w9WgXcQ')).toBe('ab c d e.mp3');
+    expect(mp3FileName(null, 'dQw4w9WgXcQ')).toBe('youtube-dQw4w9WgXcQ.mp3');
+    expect(mp3FileName('   ', 'dQw4w9WgXcQ')).toBe('youtube-dQw4w9WgXcQ.mp3');
+  });
+
+  it('fetches an MP3 File named from the X-Video-Title header', async () => {
+    const fetchFn = async (url: string) => {
+      expect(url).toBe('/api/youtube-mp3?v=dQw4w9WgXcQ');
+      return new Response(new Blob(['fake-mp3'], { type: 'audio/mpeg' }), {
+        status: 200,
+        headers: { 'X-Video-Title': encodeURIComponent('Test Song (Official)') },
+      });
+    };
+    const file = await fetchYouTubeMp3('https://youtu.be/dQw4w9WgXcQ', { endpoint: '/api/youtube-mp3', fetchFn: fetchFn as typeof fetch });
+    expect(file.name).toBe('Test Song (Official).mp3');
+    expect(file.type).toBe('audio/mpeg');
+    expect(file.size).toBe(8);
+  });
+
+  it('rejects non-YouTube input before any fetch', async () => {
+    const fetchFn = async () => { throw new Error('must not be called'); };
+    await expect(fetchYouTubeMp3('https://example.com/watch?v=dQw4w9WgXcQ', { fetchFn: fetchFn as typeof fetch }))
+      .rejects.toThrow(/YouTube link/);
+  });
+
+  it('surfaces converter errors with their status and detail', async () => {
+    const fetchFn = async () => new Response('yt-dlp failed', { status: 502 });
+    await expect(fetchYouTubeMp3('dQw4w9WgXcQ', { endpoint: '/api/youtube-mp3', fetchFn: fetchFn as typeof fetch }))
+      .rejects.toThrow(/conversion failed \(502\): yt-dlp failed/);
+  });
+
+  it('explains how to start the converter when it is unreachable', async () => {
+    const fetchFn = async () => { throw new TypeError('fetch failed'); };
+    await expect(fetchYouTubeMp3('dQw4w9WgXcQ', { endpoint: '/api/youtube-mp3', fetchFn: fetchFn as typeof fetch }))
+      .rejects.toThrow(/npm run yt-server/);
+  });
 });
 
 describe('Spotify-native looping', () => {

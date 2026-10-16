@@ -10,8 +10,12 @@ const isolation = process.env.STEMS_ISOLATE === '1'
 export default defineConfig({
   base: './',
   worker: { format: 'es' },
-  server: { headers: isolation },
-  preview: { headers: isolation },
+  // YouTube->MP3 converter (server/youtube-mp3-server.mjs, `npm run yt-server`).
+  // The client calls the same-origin /api/youtube-mp3; in dev that proxies to
+  // the local converter on :8787. In production, route that path to a deployed
+  // converter or set VITE_YT_MP3_API_URL.
+  server: { headers: isolation, proxy: { '/api': 'http://127.0.0.1:8787' } },
+  preview: { headers: isolation, proxy: { '/api': 'http://127.0.0.1:8787' } },
   optimizeDeps: { exclude: ['onnxruntime-web'] },
   test: { environment: 'node', testTimeout: 60000 },
 } as any);

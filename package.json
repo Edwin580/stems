@@ -6,6 +6,7 @@
   "description": "Upload a song, play it forever with seamless, beat-matched loops. Stem separation, loop export, all in the browser.",
   "scripts": {
     "dev": "vite",
+    "yt-server": "node server/youtube-mp3-server.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",

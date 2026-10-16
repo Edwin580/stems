@@ -11,6 +11,7 @@ import { Visualizer } from './visualizer';
 import { parseLrc, lineAt, type LyricLine } from '../lyrics/lrc';
 import { alignLoopsToLyrics, linesInLoop } from '../lyrics/loopalign';
 import { parseYouTubeId, searchYouTube, YouTubeSource } from '../sources/youtube';
+import { fetchYouTubeMp3 } from '../sources/youtube-mp3';
 import {
   handleSpotifyCallback, normalizeSpotifySection, searchSpotifyTracks, spotifyConfigured, spotifyLogin,
   spotifyLogout, spotifySectionDue, spotifyToken, SpotifyWebPlayer, type SpotifyPlaybackSnapshot,
@@ -638,6 +639,32 @@ $('yt-load').addEventListener('click', () => {
   const id = parseYouTubeId($<HTMLInputElement>('yt-url').value);
   if (!id) { $('yt-status').textContent = 'That doesn\u2019t look like a YouTube link or video ID.'; return; }
   ytPlayId(id);
+});
+
+// YouTube -> MP3 -> straight into the same load path as an uploaded file:
+// decode, beat analysis, endless loops and stem separation all apply.
+let ytMp3File: File | null = null;
+$('yt-mp3').addEventListener('click', async () => {
+  const status = $('yt-status');
+  const btn = $<HTMLButtonElement>('yt-mp3');
+  const input = $<HTMLInputElement>('yt-url').value;
+  if (!parseYouTubeId(input)) { status.textContent = 'That doesn\u2019t look like a YouTube link or video ID.'; return; }
+  btn.disabled = true;
+  status.textContent = 'Converting to MP3… (the converter downloads and converts the audio — this can take a bit)';
+  try {
+    ytMp3File = await fetchYouTubeMp3(input);
+    show('yt-mp3-download', true);
+    status.textContent = `Got ${ytMp3File.name} — loading it into the stem engine…`;
+    await load({ file: ytMp3File });
+    status.textContent = `Loaded ${ytMp3File.name} into the stem engine. Open the Stems tab to separate it.`;
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    btn.disabled = false;
+  }
+});
+$('yt-mp3-download').addEventListener('click', () => {
+  if (ytMp3File) download(ytMp3File, ytMp3File.name);
 });
 $('yt-search').addEventListener('click', async () => {
   const q = $<HTMLInputElement>('yt-q').value.trim();
