@@ -5,7 +5,10 @@
  * Why this exists: browsers cannot download YouTube audio directly (signed,
  * CORS-less, expiring stream URLs), so the static site needs one small
  * server piece for this feature. This is it: zero npm dependencies, just
- * Node + yt-dlp + ffmpeg on the host.
+ * Node + ffmpeg on the host. Extraction is our own custom engine
+ * (youtube-engine.mjs: Innertube app clients + chunked download);
+ * yt-dlp, when installed, is only a fallback for videos the engine
+ * cannot resolve.
  *
  *   GET /api/youtube-mp3?v=<videoId>     (or ?url=<youtube url>)
  *     -> 200 audio/mpeg, the video's best audio converted to MP3 (192 kbps)
@@ -13,8 +16,8 @@
  *   GET /health -> 200 "ok"
  *
  * Run:  npm run yt-server        (listens on PORT, default 8787)
- * Needs: yt-dlp (https://github.com/yt-dlp/yt-dlp) and ffmpeg on PATH.
- * If YouTube bot-checks the host, set YTDLP_COOKIES_FROM_BROWSER=chrome
+ * Needs: ffmpeg on PATH. If the yt-dlp fallback is used and YouTube
+ * bot-checks the host, set YTDLP_COOKIES_FROM_BROWSER=chrome
  * or YTDLP_COOKIES_FILE=/path/cookies.txt.
  *
  * Only use it for content you have the right to download.
@@ -25,6 +28,7 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { downloadAudioStream, extensionFor, resolveAudioStream } from './youtube-engine.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
 const ID_RE = /^[\w-]{11}$/;
@@ -69,9 +73,31 @@ function send(res, status, body, headers = {}) {
   res.end(body);
 }
 
-/** Download + convert one video to an MP3 file in a fresh temp dir. */
-async function convert(videoId) {
-  const dir = await mkdtemp(join(tmpdir(), 'stems-yt-'));
+/** Convert an audio file to MP3 192k with ffmpeg. */
+function transcodeToMp3(input, output) {
+  return new Promise((resolve, reject) => {
+    const p = spawn('ffmpeg', ['-v', 'error', '-i', input, '-codec:a', 'libmp3lame', '-b:a', '192k', '-y', output], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', (d) => { err += d; });
+    p.on('error', (e) => reject(new Error(
+      e.code === 'ENOENT' ? 'ffmpeg is not installed on the converter host.' : `Could not start ffmpeg: ${e.message}`,
+    )));
+    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg failed (exit ${code}): ${err.trim().split('\n').pop() || 'unknown error'}`))));
+  });
+}
+
+/** Primary path: our own Innertube engine (server/youtube-engine.mjs). */
+async function convertWithEngine(videoId, dir) {
+  const info = await resolveAudioStream(videoId);
+  const raw = join(dir, `audio.${extensionFor(info.format)}`);
+  await downloadAudioStream(info, raw);
+  const mp3 = join(dir, 'audio.mp3');
+  await transcodeToMp3(raw, mp3);
+  return { file: mp3, title: info.title };
+}
+
+/** Fallback: yt-dlp, when it is installed and the custom engine failed. */
+async function convertWithYtDlp(videoId, dir) {
   const outTemplate = join(dir, 'audio.%(ext)s');
   const args = [
     '-f', 'bestaudio/best',
@@ -103,12 +129,27 @@ async function convert(videoId) {
   });
   const files = (await readdir(dir)).filter((f) => f.endsWith('.mp3'));
   if (!files.length) throw new Error('Conversion produced no MP3 file.');
-  return { dir, file: join(dir, files[0]), title };
+  return { file: join(dir, files[0]), title };
 }
 
-const missing = ['yt-dlp', 'ffmpeg'].filter((bin) => spawnSync(bin, ['--version'], { stdio: 'ignore' }).error);
-if (missing.length) {
-  console.error(`[yt-server] Missing on PATH: ${missing.join(', ')}. Install them, then re-run.`);
+/** Download + convert one video to an MP3 file in a fresh temp dir. */
+async function convert(videoId) {
+  const dir = await mkdtemp(join(tmpdir(), 'stems-yt-'));
+  try {
+    const { file, title } = await convertWithEngine(videoId, dir);
+    return { dir, file, title };
+  } catch (engineErr) {
+    try {
+      const { file, title } = await convertWithYtDlp(videoId, dir);
+      return { dir, file, title };
+    } catch {
+      throw engineErr; // the custom engine's error is the informative one
+    }
+  }
+}
+
+if (spawnSync('ffmpeg', ['--version'], { stdio: 'ignore' }).error) {
+  console.error('[yt-server] Missing on PATH: ffmpeg. Install it, then re-run. (yt-dlp is now only an optional fallback.)');
 }
 
 const server = createServer(async (req, res) => {

@@ -191,6 +191,25 @@ describe('YouTube -> MP3 conversion', () => {
   });
 });
 
+describe('custom YouTube engine (server)', () => {
+  it('picks the best direct audio format and extension', async () => {
+    // @ts-ignore untyped .mjs server module
+    const engine = await import('../server/youtube-engine.mjs');
+    const best = engine.pickBestAudio([
+      { mimeType: 'audio/webm; codecs="opus"', bitrate: 160_000, url: 'opus' },
+      { mimeType: 'audio/mp4; codecs="mp4a.40.2"', bitrate: 128_000, url: 'aac' },
+      { mimeType: 'audio/mp4; codecs="mp4a.40.2"', bitrate: 64_000, url: 'aac-low' },
+      { mimeType: 'video/mp4', bitrate: 999_000, url: 'video' },
+      { mimeType: 'audio/mp4', bitrate: 999_000 }, // no URL — unusable
+    ]);
+    expect(best.url).toBe('aac');
+    expect(engine.pickBestAudio([])).toBeNull();
+    expect(engine.extensionFor({ mimeType: 'audio/webm' })).toBe('webm');
+    expect(engine.extensionFor({ mimeType: 'audio/mp4' })).toBe('m4a');
+    expect(engine.CLIENTS.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
 describe('Spotify-native looping', () => {
   it('normalizes and clamps an A-B section', () => {
     expect(normalizeSpotifySection(-500, 12_345, 10_000)).toEqual({ startMs: 0, endMs: 10_000 });
