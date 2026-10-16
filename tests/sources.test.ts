@@ -210,6 +210,34 @@ describe('custom YouTube engine (server)', () => {
   });
 });
 
+describe('anubis solver + invidious relay (server)', () => {
+  it('parses and solves an Anubis proof-of-work challenge', async () => {
+    // @ts-ignore untyped .mjs server module
+    const anubis = await import('../server/anubis.mjs');
+    const html = '<script id="anubis_challenge" type="application/json">{"rules":{"algorithm":"fast","difficulty":2},"challenge":{"id":"123e4567-e89b-42d3-a456-426614174000","randomData":"abcdef0123456789"}}</script>';
+    const challenge = anubis.parseAnubisChallenge(html);
+    expect(challenge).toMatchObject({ id: '123e4567-e89b-42d3-a456-426614174000', difficulty: 2 });
+    const { nonce, hash } = anubis.solveAnubis(challenge);
+    expect(hash.startsWith('00')).toBe(true);
+    const { createHash } = await import('node:crypto');
+    expect(createHash('sha256').update('abcdef0123456789' + String(nonce)).digest('hex')).toBe(hash);
+    expect(anubis.parseAnubisChallenge('<p>no challenge here</p>')).toBeNull();
+  });
+
+  it('relay picks MP4 audio first, then highest bitrate', async () => {
+    // @ts-ignore untyped .mjs server module
+    const relay = await import('../server/relay.mjs');
+    const best = relay.pickRelayAudio([
+      { type: 'audio/webm; codecs="opus"', bitrate: '160000', url: 'opus' },
+      { type: 'audio/mp4; codecs="mp4a.40.2"', bitrate: '128000', url: 'aac' },
+      { type: 'video/mp4', bitrate: '900000', url: 'video' },
+    ]);
+    expect(best.url).toBe('aac');
+    expect(relay.pickRelayAudio([])).toBeNull();
+    expect(relay.RELAY_INSTANCES.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
 describe('Spotify-native looping', () => {
   it('normalizes and clamps an A-B section', () => {
     expect(normalizeSpotifySection(-500, 12_345, 10_000)).toEqual({ startMs: 0, endMs: 10_000 });

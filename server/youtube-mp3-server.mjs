@@ -29,6 +29,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { downloadAudioStream, extensionFor, resolveAudioStream } from './youtube-engine.mjs';
+import { convertViaRelay } from './relay.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
 const ID_RE = /^[\w-]{11}$/;
@@ -132,20 +133,36 @@ async function convertWithYtDlp(videoId, dir) {
   return { file: join(dir, files[0]), title };
 }
 
+/** Second path: the Invidious relay (full downloads, needs ffmpeg here). */
+async function convertWithRelay(videoId, dir) {
+  const { title, buffer, contentType } = await convertViaRelay(videoId);
+  const ext = contentType.includes('webm') ? 'webm' : contentType.includes('mp4') ? 'm4a' : 'bin';
+  const raw = join(dir, `relay.${ext}`);
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile(raw, buffer);
+  const mp3 = join(dir, 'audio.mp3');
+  await transcodeToMp3(raw, mp3);
+  return { file: mp3, title };
+}
+
 /** Download + convert one video to an MP3 file in a fresh temp dir. */
 async function convert(videoId) {
   const dir = await mkdtemp(join(tmpdir(), 'stems-yt-'));
-  try {
-    const { file, title } = await convertWithEngine(videoId, dir);
-    return { dir, file, title };
-  } catch (engineErr) {
+  const attempts = [
+    ['custom engine', () => convertWithEngine(videoId, dir)],
+    ['invidious relay', () => convertWithRelay(videoId, dir)],
+    ['yt-dlp', () => convertWithYtDlp(videoId, dir)],
+  ];
+  const errors = [];
+  for (const [name, run] of attempts) {
     try {
-      const { file, title } = await convertWithYtDlp(videoId, dir);
+      const { file, title } = await run();
       return { dir, file, title };
-    } catch {
-      throw engineErr; // the custom engine's error is the informative one
+    } catch (error) {
+      errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  throw new Error(errors.join(' · '));
 }
 
 if (spawnSync('ffmpeg', ['--version'], { stdio: 'ignore' }).error) {

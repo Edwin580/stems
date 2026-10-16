@@ -655,11 +655,10 @@ $('yt-mp3').addEventListener('click', async () => {
   status.textContent = 'Converting to MP3… (fetching the audio and converting — this can take a bit)';
   try {
     ytMp3File = await fetchYouTubeMp3(input, {
-      // The same-origin /api endpoint only exists in local dev (Vite proxy
-      // to `npm run yt-server`) or on a host that routes it; on static
-      // hosting it would just 404, so production goes to the public
-      // fallback directly.
-      trySameOrigin: import.meta.env.DEV,
+      // Same-origin /api exists in local dev (Vite proxy to
+      // `npm run yt-server`) and on the single-site deploy (Vercel);
+      // on purely static hosting it 404s and the chain falls through.
+      trySameOrigin: true, // single-site deploy serves /api itself; static hosts 404 and fall through
       decodeAudio: (data) => new OfflineAudioContext(2, 1, 44_100).decodeAudioData(data),
     });
     show('yt-mp3-download', true);
