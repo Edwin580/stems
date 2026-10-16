@@ -710,7 +710,10 @@ $<HTMLFormElement>('yt-form').addEventListener('submit', async (e) => {
   } catch (err) {
     show('yt-progress', false);
     show('open');
-    status.textContent = err instanceof Error ? err.message : String(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    status.textContent = /not a bot/i.test(msg)
+      ? 'YouTube refused this download: it asks the relay to sign in to prove it isn’t a bot, which it does for cloud servers. Drop the song’s audio file above instead, or play it with the official player under “Listen with the official players”.'
+      : msg;
     if (err instanceof YouTubeBotCheckError) {
       ytBotCheckInstance = err.instance;
       show('yt-botcheck', true);
