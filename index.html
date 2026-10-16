@@ -36,7 +36,7 @@
 
       <section id="sources" class="card">
         <h2>More sources</h2>
-        <p class="hint">YouTube and Spotify play in the app through their official players. A YouTube link can also be converted to MP3 in the app (needs the converter endpoint — <code>npm run yt-server</code> locally, see README) and then feeds the endless/stem engine directly, like an uploaded file. Spotify supports native track repeat and A-B section looping below; the sample-accurate endless/stem engine still needs the song as an uploaded audio file, because Spotify never exposes the stream's audio samples.</p>
+        <p class="hint">YouTube and Spotify play in the app through their official players. A YouTube link can also be converted to MP3 in the app (public fallback, or the local converter endpoint — <code>npm run yt-server</code>, see README) and then feeds the endless/stem engine directly, like an uploaded file. Spotify supports native track repeat and A-B section looping below; the sample-accurate endless/stem engine still needs the song as an uploaded audio file, because Spotify never exposes the stream's audio samples.</p>
         <div class="src-grid">
           <div class="src">
             <h3>YouTube</h3>
@@ -47,6 +47,7 @@
             <div class="row">
               <button id="yt-mp3" class="primary">Convert to MP3 &amp; use for stems</button>
               <button id="yt-mp3-download" class="ghost hidden">Download MP3</button>
+              <button id="yt-botcheck" class="ghost hidden">Pass the bot check</button>
             </div>
             <div class="row hidden" id="yt-search-row">
               <input id="yt-q" type="text" placeholder="Search YouTube music…" aria-label="Search YouTube" />

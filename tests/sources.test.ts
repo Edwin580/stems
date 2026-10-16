@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { parseLrc, lineAt } from '../src/lyrics/lrc';
 import { alignLoopsToLyrics } from '../src/lyrics/loopalign';
 import { parseYouTubeId } from '../src/sources/youtube';
-import { fetchYouTubeMp3, mp3FileName, youtubeMp3Endpoint, youtubeMp3RequestUrl } from '../src/sources/youtube-mp3';
+import {
+  encodeMp3, fetchYouTubeMp3, mp3FileName, pickInvidiousAudio, safeErrorDetail,
+  YouTubeBotCheckError, youtubeMp3Endpoint, youtubeMp3RequestUrl, type DecodableAudio,
+} from '../src/sources/youtube-mp3';
 import {
   base64Url, codeChallenge, normalizeSpotifySection, spotifyPlaybackSnapshot, spotifySectionDue,
 } from '../src/sources/spotify';
@@ -95,7 +98,7 @@ describe('YouTube -> MP3 conversion', () => {
         headers: { 'X-Video-Title': encodeURIComponent('Test Song (Official)') },
       });
     };
-    const file = await fetchYouTubeMp3('https://youtu.be/dQw4w9WgXcQ', { endpoint: '/api/youtube-mp3', fetchFn: fetchFn as typeof fetch });
+    const file = await fetchYouTubeMp3('https://youtu.be/dQw4w9WgXcQ', { endpoint: '/api/youtube-mp3', trySameOrigin: true, instances: [], fetchFn: fetchFn as typeof fetch });
     expect(file.name).toBe('Test Song (Official).mp3');
     expect(file.type).toBe('audio/mpeg');
     expect(file.size).toBe(8);
@@ -107,15 +110,83 @@ describe('YouTube -> MP3 conversion', () => {
       .rejects.toThrow(/YouTube link/);
   });
 
-  it('surfaces converter errors with their status and detail', async () => {
-    const fetchFn = async () => new Response('yt-dlp failed', { status: 502 });
-    await expect(fetchYouTubeMp3('dQw4w9WgXcQ', { endpoint: '/api/youtube-mp3', fetchFn: fetchFn as typeof fetch }))
-      .rejects.toThrow(/conversion failed \(502\): yt-dlp failed/);
+  it('never dumps an HTML error page into the message', () => {
+    expect(safeErrorDetail('<!DOCTYPE html><html><head><title>404</title></head></html>')).toBe('');
+    expect(safeErrorDetail('yt-dlp failed')).toBe('yt-dlp failed');
   });
 
-  it('explains how to start the converter when it is unreachable', async () => {
-    const fetchFn = async () => { throw new TypeError('fetch failed'); };
-    await expect(fetchYouTubeMp3('dQw4w9WgXcQ', { endpoint: '/api/youtube-mp3', fetchFn: fetchFn as typeof fetch }))
+  it('falls back to Invidious and re-encodes m4a audio to a real MP3', async () => {
+    const fakePcm: DecodableAudio = {
+      numberOfChannels: 2, sampleRate: 44_100, length: 4_410,
+      getChannelData: () => Float32Array.from({ length: 4_410 }, (_, i) => Math.sin(i / 20) * 0.5),
+    };
+    const fetchFn = async (url: string) => {
+      if (url.includes('/api/v1/videos/')) {
+        return Response.json({
+          title: 'Hit and Run',
+          adaptiveFormats: [
+            { itag: 251, type: 'audio/webm; codecs="opus"', bitrate: 150_000, url: 'https://inv.example/opus' },
+            { itag: 140, type: 'audio/mp4; codecs="mp4a.40.2"', bitrate: 130_000, url: 'https://inv.example/m4a' },
+          ],
+        });
+      }
+      expect(url).toBe('https://inv.example/m4a'); // mp4 preferred over higher-bitrate opus
+      return new Response(new Blob(['FAKE-M4A-AUDIO'], { type: 'audio/mp4' }), { status: 200 });
+    };
+    const file = await fetchYouTubeMp3('https://youtu.be/Gw_NGU6osNo', {
+      instances: ['https://inv.example'],
+      fetchFn: fetchFn as typeof fetch,
+      decodeAudio: async () => fakePcm,
+    });
+    expect(file.name).toBe('Hit and Run.mp3');
+    expect(file.type).toBe('audio/mpeg');
+    expect(file.size).toBeGreaterThan(500);
+    const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+    expect(head[0]).toBe(0xff);
+    expect(head[1] & 0xe0).toBe(0xe0); // MP3 frame sync
+  });
+
+  it('raises the bot-check error when the fallback serves an HTML challenge', async () => {
+    const fetchFn = async (url: string) => {
+      if (url.includes('/api/v1/videos/')) {
+        return Response.json({
+          title: 'Song',
+          adaptiveFormats: [{ itag: 140, type: 'audio/mp4', bitrate: 128_000, url: 'https://inv.example/media' }],
+        });
+      }
+      return new Response('<!DOCTYPE html><html><title>Making sure you are not a bot!</title>', {
+        status: 200, headers: { 'Content-Type': 'text/html' },
+      });
+    };
+    const err = await fetchYouTubeMp3('Gw_NGU6osNo', { instances: ['https://inv.example'], fetchFn: fetchFn as typeof fetch })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(YouTubeBotCheckError);
+    expect(err.instance).toBe('https://inv.example');
+  });
+
+  it('picks the best audio format (mp4 first, then bitrate)', () => {
+    const best = pickInvidiousAudio([
+      { type: 'audio/webm', bitrate: 160_000, url: 'a' },
+      { type: 'audio/mp4', bitrate: 96_000, url: 'b' },
+      { type: 'video/mp4', bitrate: 999_000, url: 'c' },
+    ]);
+    expect(best?.url).toBe('b');
+    expect(pickInvidiousAudio([{ type: 'video/mp4', url: 'c' }])).toBeNull();
+  });
+
+  it('encodes PCM to an MP3 blob with a frame sync', () => {
+    const pcm: DecodableAudio = {
+      numberOfChannels: 1, sampleRate: 22_050, length: 2_205,
+      getChannelData: () => Float32Array.from({ length: 2_205 }, (_, i) => Math.sin(i / 10) * 0.4),
+    };
+    const blob = encodeMp3(pcm);
+    expect(blob.type).toBe('audio/mpeg');
+    expect(blob.size).toBeGreaterThan(100);
+  });
+
+  it('ends with the local-converter advice when every route fails', async () => {
+    const fetchFn = async () => new Response('nope', { status: 502 });
+    await expect(fetchYouTubeMp3('dQw4w9WgXcQ', { endpoint: '/api/youtube-mp3', trySameOrigin: true, instances: [], fetchFn: fetchFn as typeof fetch }))
       .rejects.toThrow(/npm run yt-server/);
   });
 });

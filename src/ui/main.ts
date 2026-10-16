@@ -11,7 +11,7 @@ import { Visualizer } from './visualizer';
 import { parseLrc, lineAt, type LyricLine } from '../lyrics/lrc';
 import { alignLoopsToLyrics, linesInLoop } from '../lyrics/loopalign';
 import { parseYouTubeId, searchYouTube, YouTubeSource } from '../sources/youtube';
-import { fetchYouTubeMp3 } from '../sources/youtube-mp3';
+import { fetchYouTubeMp3, YouTubeBotCheckError } from '../sources/youtube-mp3';
 import {
   handleSpotifyCallback, normalizeSpotifySection, searchSpotifyTracks, spotifyConfigured, spotifyLogin,
   spotifyLogout, spotifySectionDue, spotifyToken, SpotifyWebPlayer, type SpotifyPlaybackSnapshot,
@@ -644,24 +644,41 @@ $('yt-load').addEventListener('click', () => {
 // YouTube -> MP3 -> straight into the same load path as an uploaded file:
 // decode, beat analysis, endless loops and stem separation all apply.
 let ytMp3File: File | null = null;
+let ytBotCheckInstance = '';
 $('yt-mp3').addEventListener('click', async () => {
   const status = $('yt-status');
   const btn = $<HTMLButtonElement>('yt-mp3');
   const input = $<HTMLInputElement>('yt-url').value;
   if (!parseYouTubeId(input)) { status.textContent = 'That doesn\u2019t look like a YouTube link or video ID.'; return; }
   btn.disabled = true;
-  status.textContent = 'Converting to MP3… (the converter downloads and converts the audio — this can take a bit)';
+  show('yt-botcheck', false);
+  status.textContent = 'Converting to MP3… (fetching the audio and converting — this can take a bit)';
   try {
-    ytMp3File = await fetchYouTubeMp3(input);
+    ytMp3File = await fetchYouTubeMp3(input, {
+      // The same-origin /api endpoint only exists in local dev (Vite proxy
+      // to `npm run yt-server`) or on a host that routes it; on static
+      // hosting it would just 404, so production goes to the public
+      // fallback directly.
+      trySameOrigin: import.meta.env.DEV,
+      decodeAudio: (data) => new OfflineAudioContext(2, 1, 44_100).decodeAudioData(data),
+    });
     show('yt-mp3-download', true);
     status.textContent = `Got ${ytMp3File.name} — loading it into the stem engine…`;
     await load({ file: ytMp3File });
     status.textContent = `Loaded ${ytMp3File.name} into the stem engine. Open the Stems tab to separate it.`;
   } catch (err) {
     status.textContent = err instanceof Error ? err.message : String(err);
+    if (err instanceof YouTubeBotCheckError) {
+      ytBotCheckInstance = err.instance;
+      show('yt-botcheck', true);
+    }
   } finally {
     btn.disabled = false;
   }
+});
+$('yt-botcheck').addEventListener('click', () => {
+  if (ytBotCheckInstance) window.open(ytBotCheckInstance, '_blank', 'noopener');
+  $('yt-status').textContent = 'Opened the converter site in a new tab. Once it loads, come back here and press “Convert to MP3 & use for stems” again.';
 });
 $('yt-mp3-download').addEventListener('click', () => {
   if (ytMp3File) download(ytMp3File, ytMp3File.name);
