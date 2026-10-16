@@ -186,13 +186,21 @@ export interface SpotifySection {
 export function normalizeSpotifySection(startMs: number, endMs: number, durationMs: number): SpotifySection | null {
   if (![startMs, endMs, durationMs].every(Number.isFinite) || durationMs <= 0) return null;
   const start = Math.min(Math.max(0, Math.floor(startMs)), Math.max(0, durationMs - 1000));
-  const end = Math.min(Math.max(0, Math.floor(endMs)), durationMs);
+  // Stop short of the track's real end: once Spotify reaches it the track is
+  // over (it stops or advances), and there is nothing left to seek back from.
+  const end = Math.min(Math.max(0, Math.floor(endMs)), durationMs - TRACK_END_GUARD_MS);
   return end - start >= 1000 ? { startMs: start, endMs: end } : null;
 }
 
-/** True when playback has reached the end of an A-B section. */
-export function spotifySectionDue(positionMs: number, section: SpotifySection | null): boolean {
-  return !!section && positionMs >= section.endMs;
+const TRACK_END_GUARD_MS = 300;
+
+/**
+ * True when playback is at (or about to reach) the end of an A-B section.
+ * The lookahead covers the 100 ms polling interval plus seek latency, so the
+ * jump back happens on time rather than up to one poll late.
+ */
+export function spotifySectionDue(positionMs: number, section: SpotifySection | null, lookaheadMs = 150): boolean {
+  return !!section && positionMs >= section.endMs - lookaheadMs;
 }
 
 export interface SpotifyPlaybackSnapshot {

@@ -193,7 +193,7 @@ describe('YouTube -> MP3 conversion', () => {
 
 describe('Spotify-native looping', () => {
   it('normalizes and clamps an A-B section', () => {
-    expect(normalizeSpotifySection(-500, 12_345, 10_000)).toEqual({ startMs: 0, endMs: 10_000 });
+    expect(normalizeSpotifySection(-500, 12_345, 10_000)).toEqual({ startMs: 0, endMs: 9_700 }); // stops short of the track end
     expect(normalizeSpotifySection(2_000, 8_000, 10_000)).toEqual({ startMs: 2_000, endMs: 8_000 });
   });
 
@@ -202,9 +202,10 @@ describe('Spotify-native looping', () => {
     expect(normalizeSpotifySection(2_000, 8_000, 0)).toBeNull();
   });
 
-  it('fires only at or after the section end', () => {
+  it('fires at the section end, with a short lookahead for polling and seek latency', () => {
     const section = { startMs: 2_000, endMs: 8_000 };
-    expect(spotifySectionDue(7_999, section)).toBe(false);
+    expect(spotifySectionDue(7_849, section)).toBe(false);
+    expect(spotifySectionDue(7_850, section)).toBe(true); // 150 ms lookahead
     expect(spotifySectionDue(8_000, section)).toBe(true);
     expect(spotifySectionDue(8_000, null)).toBe(false);
   });
