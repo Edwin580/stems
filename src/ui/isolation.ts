@@ -1,34 +1,34 @@
 /**
- * Cross-origin isolation (COOP/COEP) is opt-in ("multi-threaded mode").
+ * Cross-origin isolation (COOP/COEP), on by default ("shared memory" mode).
  *
- * It unlocks SharedArrayBuffer (zero-copy audio between page, worklet and
- * workers) and multi-threaded WASM for HTDemucs on CPU, but it also blocks
- * third-party content that doesn't opt in, and on static hosts it needs a
- * service-worker reload. So it is off by default.
+ * It unlocks SharedArrayBuffer, so the song and its stems are shared with the
+ * audio worklet and workers instead of copied (a 4-minute song's stems are
+ * ~370 MB; copying them can exhaust a phone's memory), and multi-threaded
+ * WASM for HTDemucs on CPU.
  *
  * Static hosts (GitHub Pages) can't send the headers, so the service worker
- * adds them, but only while this marker exists in Cache Storage. The service
+ * adds them unless this opt-out marker exists in Cache Storage. The service
  * worker reads the same marker.
  */
 const CACHE = 'stems-coi';
-const markerUrl = () => new URL('./__coi-on', location.href).href;
+const markerUrl = () => new URL('./__coi-off', location.href).href;
 // (Distinct from the key older builds used, so their guard can't block the fix-up reload.)
 const RELOAD_KEY = 'stems.coiSync';
 
 export async function isolationWanted(): Promise<boolean> {
   try {
-    return !!(await (await caches.open(CACHE)).match(markerUrl()));
+    return !(await (await caches.open(CACHE)).match(markerUrl()));
   } catch {
-    return false;
+    return true;
   }
 }
 
-/** Turn multi-threaded mode on or off; reloads the page so the new headers apply. */
+/** Turn shared-memory mode on or off; reloads the page so the new headers apply. */
 export async function setIsolation(on: boolean): Promise<void> {
   try {
     const c = await caches.open(CACHE);
-    if (on) await c.put(markerUrl(), new Response('1'));
-    else await c.delete(markerUrl());
+    if (on) await c.delete(markerUrl());
+    else await c.put(markerUrl(), new Response('1'));
     sessionStorage.removeItem(RELOAD_KEY);
   } catch { /* storage blocked: nothing to toggle */ }
   location.reload();

@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite';
 
-// Cross-origin isolation (SharedArrayBuffer + threaded WASM) is opt-in because it
-// needs a service-worker reload on static hosts. In production the service worker
-// applies it when the user enables multi-threaded mode; locally, STEMS_ISOLATE=1.
-const isolation = process.env.STEMS_ISOLATE === '1'
+// Cross-origin isolation (SharedArrayBuffer + threaded WASM). In production the
+// service worker applies it unless the user turns shared memory off; locally it is
+// on unless STEMS_ISOLATE=0.
+const isolation = process.env.STEMS_ISOLATE !== '0'
   ? { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' }
   : {};
 

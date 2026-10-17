@@ -28,6 +28,8 @@ export interface PlayerEvents {
   onAnalysis?: (fromCache: boolean) => void;
   onStemsProgress?: (stage: string, fraction: number) => void;
   onStems?: (stems: Stems, backend: string) => void;
+  /** Seams were re-scored (stems arrived or vocal awareness changed): loops may differ. */
+  onRescored?: () => void;
   onJump?: (jump: Jump) => void;
   onEnded?: () => void;
   onSleep?: () => void;
@@ -121,6 +123,7 @@ export class Player {
     this.analysis = null;
     this.planner = null;
     this.stems = null;
+    this.vocalPenalty = null;
     this.loops = [];
     this.gains = [1];
     this.locked = [false];
@@ -130,7 +133,7 @@ export class Player {
     this.ended = false;
     this.send({ type: 'load', groups: [channels], names: ['mix'] });
     this.coarse = coarseMono(this.source);
-    this.events.onProgress?.('Decoded — press play any time', 0.05);
+    this.events.onProgress?.('Decoded', 0.05);
 
     let analysis = hash ? await cache.getAnalysis(hash, sampleRate) : null;
     const fromCache = !!analysis;
@@ -345,21 +348,24 @@ export class Player {
     let stems = method === 'htdemucs' && this.fileHash ? await cache.getStems(this.fileHash, src.sampleRate, method) : null;
     let backend = 'cache';
     if (!stems) {
-      const runWorker = (wasmOnly: boolean) => new Promise<{ stems: Stems; backend: string }>((resolve, reject) => {
+      const runWorker = (wasmOnly: boolean) => new Promise<{ stems: Stems; backend: string; vocalPenalty?: Float32Array }>((resolve, reject) => {
         const w = new Worker(new URL('./separation.worker.ts', import.meta.url), { type: 'module' });
         w.onmessage = (e: MessageEvent<FromSeparation>) => {
           const m = e.data;
           if (m.type === 'progress') this.events.onStemsProgress?.(m.stage, m.fraction);
           else {
             w.terminate();
-            if (m.type === 'done') resolve({ stems: m.stems, backend: m.backend }); else reject(new Error(m.message));
+            if (m.type === 'done') resolve({ stems: m.stems, backend: m.backend, vocalPenalty: m.vocalPenalty }); else reject(new Error(m.message));
           }
         };
         w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'Separation worker failed')); };
-        const msg: ToSeparation = { method, channels: src.channels, sampleRate: src.sampleRate, modelUrl, ...(wasmOnly ? { wasmOnly: true } : {}) };
+        const msg: ToSeparation = {
+          method, channels: src.channels, sampleRate: src.sampleRate, modelUrl, beats: this.analysis?.beats, hash: this.fileHash || undefined,
+          ...(wasmOnly ? { wasmOnly: true } : {}),
+        };
         w.postMessage(msg);
       });
-      let res: { stems: Stems; backend: string };
+      let res: { stems: Stems; backend: string; vocalPenalty?: Float32Array };
       try {
         res = await runWorker(false);
       } catch (err) {
@@ -368,38 +374,57 @@ export class Player {
         // WASM fallback is already dead. Retry once in a fresh worker whose
         // first session attempt is WASM-only; the model comes from cache.
         if (method !== 'htdemucs' || !isBackendInitError(err instanceof Error ? err.message : String(err))) throw err;
-        this.events.onStemsProgress?.('Backend failed to start — retrying with WASM only', 0);
+        this.events.onStemsProgress?.('Backend failed to start; retrying with WASM', 0);
         res = await runWorker(true);
       }
       stems = res.stems;
       backend = res.backend;
-      if (method === 'htdemucs' && this.fileHash) void cache.putStems(this.fileHash, src.sampleRate, stems);
+      this.vocalPenalty = res.vocalPenalty ?? null;
+    } else {
+      this.vocalPenalty = null;
     }
     if (token !== this.loadToken) return;
+    // Already shared when the worker produced them; cached stems still need copying.
     stems = { ...stems, channels: stems.channels.map((g) => g.map(shareable)) };
     this.stems = stems;
     this.gains = stems.names.map(() => 1);
     this.locked = stems.names.map(() => false);
     this.send({ type: 'sources', groups: stems.channels, names: stems.names });
-    this.applyVocalAwareness();
     this.events.onStems?.(stems, backend);
+    await this.applyVocalAwareness();
   }
+
+  /** Per-beat vocal seam penalty for the current stems, computed by the separation worker. */
+  private vocalPenalty: Float32Array | null = null;
 
   /** Re-score seams with (or without) the vocal-activity penalty. */
-  setVocalAware(on: boolean) {
+  setVocalAware(on: boolean): Promise<void> {
     this.vocalAware = on;
-    this.applyVocalAwareness();
+    return this.applyVocalAwareness();
   }
 
-  private applyVocalAwareness() {
+  /** Split into short steps so the page stays responsive (each is ~100 ms on a desktop). */
+  private async applyVocalAwareness(): Promise<void> {
+    const tick = () => new Promise((r) => setTimeout(r, 0));
     if (!this.analysis || !this.source) return;
     const vi = this.stems?.hasVocals ? this.stems.names.indexOf('vocals') : -1;
-    const pen = this.vocalAware && vi >= 0
-      ? vocalBoundaryPenalty(this.stems!.channels[vi], this.source.channels, this.analysis.beats, this.source.sampleRate)
-      : undefined;
+    let pen: Float32Array | undefined;
+    if (this.vocalAware && vi >= 0) {
+      if (!this.vocalPenalty) {
+        await tick();
+        this.vocalPenalty = vocalBoundaryPenalty(this.stems!.channels[vi], this.source.channels, this.analysis.beats, this.source.sampleRate);
+      }
+      pen = this.vocalPenalty;
+    }
     if (!pen && !this.analysis.boundaryPenalty) return;
+    const token = this.loadToken;
+    await tick();
+    if (token !== this.loadToken || !this.analysis) return;
     this.analysis = rescoreWithPenalty(this.analysis, pen);
+    await tick();
+    if (token !== this.loadToken) return;
     this.rebuild();
+    this.events.onRescored?.();
   }
 
   setGains(gains: number[]) {

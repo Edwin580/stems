@@ -23,9 +23,9 @@ Everything runs locally on a custom DSP engine written in TypeScript, with an As
 
 ```bash
 npm install
-npm run dev         # http://localhost:5173 (STEMS_ISOLATE=1 npm run dev for multi-threaded mode)
+npm run dev         # http://localhost:5173 (STEMS_ISOLATE=0 npm run dev to test without shared memory)
 npm test            # Vitest suites (synthetic songs with ground truth)
-npm run build       # static site in dist/ — any static host works (GitHub Pages included)
+npm run build       # static site in dist/; any static host works, GitHub Pages included
 npm run build:wasm  # rebuild the SIMD FFT from assembly/fft.ts
 ```
 

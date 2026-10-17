@@ -41,7 +41,7 @@ function setProgress(stage: string, f: number) {
 }
 
 function setStemProgress(stage: string, f: number) {
-  if (/segment/i.test(stage)) $('sep-note').textContent = 'Keep this page open. It keeps playing while it works.';
+  if (/segment/i.test(stage)) $('sep-note').textContent = 'Playback continues while this runs. Keep the page open.';
   $('sstage').textContent = stage;
   $('spct').textContent = `${Math.round(f * 100)}%`;
   $('sbar-fill').style.width = `${Math.round(f * 100)}%`;
@@ -58,7 +58,7 @@ $('env-note').textContent = [
 ].join(' · ');
 
 if (pendingShare) {
-  $('share-banner').innerHTML = `Someone shared a ${pendingShare.mode === 'loop' ? 'loop' : 'endless mix'}${pendingShare.n ? ` of <b>${esc(pendingShare.n)}</b>` : ''}. Choose the same song file to hear it.`;
+  $('share-banner').innerHTML = `Shared ${pendingShare.mode === 'loop' ? 'loop' : 'endless mix'}${pendingShare.n ? ` of <b>${esc(pendingShare.n)}</b>` : ''}. Open the same audio file to apply it.`;
   show('share-banner');
 }
 
@@ -72,6 +72,7 @@ async function ensurePlayer(): Promise<Player> {
     onAnalysis: (fromCache) => onAnalysed(fromCache),
     onStemsProgress: setStemProgress,
     onStems: (_s, backend) => onStems(backend),
+    onRescored: () => { renderLoops(); refreshGraph(); updateModeHint(); },
     onJump: (j) => viz.flashJump(j),
     onEnded: () => updatePlayButton(),
     onSleep: () => { $<HTMLSelectElement>('sleep').value = '0'; updatePlayButton(); },
@@ -82,9 +83,9 @@ async function ensurePlayer(): Promise<Player> {
 
 /** Engine stage names, in plain words. */
 function friendlyStage(stage: string): string {
-  if (/^Decoded/.test(stage)) return 'Ready to play · finding the seams';
+  if (/^Decoded/.test(stage)) return 'Decoded. Analyzing';
   if (/loops/i.test(stage)) return 'Finding loops';
-  return `Listening to the song · ${stage.toLowerCase()}`;
+  return `Analyzing: ${stage.toLowerCase()}`;
 }
 
 /** Resolve once the player has decoded audio (analysis may still be running). */
@@ -100,19 +101,20 @@ function waitForSource(p: Player, done: Promise<void>): Promise<void> {
 async function load(source: { file?: File; demo?: boolean }) {
   show('error', false);
   show('home', false);
+  show('another');
   try {
     const p = await ensurePlayer();
     p.source = null;
     show('app');
     show('aprog');
     resetSongUi();
-    setProgress('Opening the song', 0);
+    setProgress('Decoding', 0);
     let loaded: Promise<void>;
     if (source.file) {
       song = await songInfo(source.file);
       loaded = p.loadFile(source.file);
     } else {
-      song = { title: 'Demo track', artist: 'made in your browser' };
+      song = { title: 'Demo track', artist: 'Synthesized in the browser' };
       loaded = p.loadChannels(synthSong({ sampleRate: p.ctx.sampleRate }).channels);
     }
     $('track').textContent = song.title || 'Untitled';
@@ -123,8 +125,9 @@ async function load(source: { file?: File; demo?: boolean }) {
     await loaded;
   } catch (err) {
     show('app', false);
+    show('another', false);
     show('home');
-    showError(`Couldn't open that file: ${errText(err)}. Try an MP3, M4A or WAV.`);
+    showError(`Couldn't decode that file (${errText(err)}). MP3, M4A, WAV, FLAC and OGG are supported.`);
   }
 }
 
@@ -138,6 +141,7 @@ function resetSongUi() {
   $('sep-note').textContent = '';
   lyricLines = [];
   lyricsSearched = false;
+  sectionFromHandles = false;
   $('lyrics').innerHTML = '';
   $('lyr-results').innerHTML = '';
   $('lyr-status').textContent = '';
@@ -184,6 +188,10 @@ function setMode(mode: 'endless' | 'loop', apply = true) {
   const p = player;
   if (apply && p) {
     p.updateSettings({ mode });
+    if (mode === 'endless' && p.analysis && p.currentSettings.range && !sectionFromHandles) {
+      p.setSection(null);
+      syncSectionInputs();
+    }
     if (mode === 'loop' && p.analysis) {
       // Loop mode always shows its loop on the handles: the section if one is
       // set, otherwise the best loop found.
@@ -206,22 +214,22 @@ function updateModeHint() {
   const p = player;
   const el = $('mode-hint');
   if (!p?.source) { el.textContent = ''; return; }
-  if (!p.analysis) { el.textContent = 'You can press play now. Seamless jumps switch on in a few seconds.'; return; }
+  if (!p.analysis) { el.textContent = 'Ready to play. Jumps start once analysis finishes.'; return; }
   const sr = p.source.sampleRate;
   const r = p.currentSettings.range;
   if (currentMode() === 'endless') {
     el.textContent = r
-      ? `Endless, inside ${fmt(p.analysis.beats[r.start] / sr)}–${fmt(p.analysis.beats[r.end] / sr)}: jumps around within that part and never leaves it.`
-      : 'Endless: moves through the song, jumping between moments that match. It never ends.';
+      ? `Endless within ${fmt(p.analysis.beats[r.start] / sr)}-${fmt(p.analysis.beats[r.end] / sr)}.`
+      : 'Endless across the full track, splicing between matching bars.';
     return;
   }
   const loop = p.currentSettings.loop;
   const i = loop ? displayedLoops().findIndex((l) => l.startSample === loop.startSample && l.endSample === loop.endSample) : -1;
-  const seam = loop && loop.rho >= 0.8 && loop.spectralDb <= 4 ? 'smooth seam' : loop && loop.rho >= 0.5 ? 'decent seam' : 'the seam may be audible, so try moving a handle a bar or two';
-  const what = i >= 0 ? `loop ${i + 1}` : r ? 'your section' : 'the whole song';
+  const seam = loop ? (seamGrade(loop) === 'audible' ? 'likely audible; try moving a handle by a bar' : seamLabel(loop).toLowerCase()) : '';
+  const what = i >= 0 ? `loop ${i + 1}` : r ? 'section' : 'full track';
   el.textContent = loop
-    ? `Loop: repeating ${what} (${fmt(loop.startSample / sr)}–${fmt(loop.endSample / sr)}, ${seam}) forever. Drag the handles to change it.`
-    : 'Loop: no seamless loop was found in this song. Drag the handles to pick a part to repeat.';
+    ? `Looping ${what}, ${fmt(loop.startSample / sr)}-${fmt(loop.endSample / sr)}. Seam: ${seam}.`
+    : 'No verified loop in this track. Drag the handles to choose a section.';
 }
 
 // ---- Tabs ---------------------------------------------------------------------------
@@ -247,7 +255,7 @@ function refreshGraph() {
   const n = player!.analysis!.beats.length;
   const pct = Math.round((100 * pl.coreSize) / n);
   const relaxed = pl.effectiveThreshold > pl.settings.threshold + 1e-6;
-  $('thr-note').textContent = `${pct}% of the song is reachable${relaxed ? ' (loosened automatically: too strict for this song)' : ''}.`;
+  $('thr-note').textContent = `${pct}% of the track is reachable${relaxed ? '; loosened automatically because the setting left too few jumps' : ''}.`;
 }
 
 function syncControls() {
@@ -286,6 +294,7 @@ for (const id of ['bars', 'thr', 'fade', 'phrase', 'barlock', 'autofade', 'loudn
 function selectLoop(loop: LoopCandidate) {
   const p = player;
   if (!p) return;
+  sectionFromHandles = false;
   p.updateSettings({ mode: 'loop' });
   p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop);
   relockStems(loop);
@@ -294,6 +303,14 @@ function selectLoop(loop: LoopCandidate) {
 }
 
 /** Locked stems follow the current loop. */
+/** Seam grade from the sample-level checks (correlation across the splice and spectral step). */
+function seamGrade(l: LoopCandidate): 'clean' | 'fair' | 'audible' {
+  return l.rho >= 0.8 && l.spectralDb <= 4 ? 'clean' : l.rho >= 0.5 && l.spectralDb <= 8 ? 'fair' : 'audible';
+}
+function seamLabel(l: LoopCandidate): string {
+  return { clean: 'Clean', fair: 'Fair', audible: 'Audible' }[seamGrade(l)];
+}
+
 function relockStems(loop: LoopCandidate) {
   const p = player;
   p?.locked.forEach((l, i) => { if (l) { p.unlockStem(i); p.lockStem(i, loop); } });
@@ -302,6 +319,8 @@ function relockStems(loop: LoopCandidate) {
 // ---- Section handles --------------------------------------------------------------------
 
 let stops: number[] = [];
+/** True when the person dragged the handles; a section that only came from picking a loop is dropped when leaving Loop mode. */
+let sectionFromHandles = false;
 const secStart = $<HTMLInputElement>('sec-start');
 const secEnd = $<HTMLInputElement>('sec-end');
 
@@ -362,8 +381,8 @@ function drawSection(indices?: [number, number]) {
   viz.setSection(whole ? null : [b[stops[si]], b[stops[ei]]]);
   const bars = Math.round((stops[ei] - stops[si]) / p.analysis.meter.beatsPerBar);
   $('sec-label').textContent = whole
-    ? 'Drag the handles to choose the part that plays'
-    : `${fmt(b[stops[si]] / sr)} – ${fmt(b[stops[ei]] / sr)} · ${bars} bar${bars === 1 ? '' : 's'}`;
+    ? 'Full track'
+    : `${fmt(b[stops[si]] / sr)}-${fmt(b[stops[ei]] / sr)}, ${bars} bar${bars === 1 ? '' : 's'}`;
   show('sec-reset', !whole);
 }
 
@@ -380,6 +399,7 @@ function applySection([si, ei]: [number, number]) {
   const p = player;
   if (!p?.analysis) return;
   const whole = si === 0 && ei === stops.length - 1;
+  sectionFromHandles = !whole;
   p.setSection(whole ? null : { start: stops[si], end: stops[ei] });
   const loop = p.currentSettings.loop;
   if (currentMode() === 'loop' && loop) relockStems(loop);
@@ -426,14 +446,13 @@ function renderLoops() {
     const li = document.createElement('li');
     const active = !!sel && sel.startSample === l.startSample && sel.endSample === l.endSample;
     li.classList.toggle('sel', active);
-    const lyricNote = lyricLines.length ? ` · ${linesInLoop(l, lyricLines, sr).length} lyric lines` : '';
+    const lyricNote = lyricLines.length ? `, ${linesInLoop(l, lyricLines, sr).length} lyric lines` : '';
     li.innerHTML = `
-      <span class="q" title="Seam match">${l.quality}%</span>
-      <span class="meta"><b>Loop ${i + 1} · ${l.bars} bars</b><br>${fmt(l.startSample / sr)}–${fmt(l.endSample / sr)} · ${fmt(l.seconds)} long${lyricNote}</span>
+      <span class="meta"><b>Loop ${i + 1}</b> <span class="q ${seamGrade(l)}" title="Waveform correlation ${Math.round(l.rho * 100)}%, spectral step ${l.spectralDb.toFixed(1)} dB">${seamLabel(l)} seam</span><br>${l.bars} bars, ${fmt(l.startSample / sr)}-${fmt(l.endSample / sr)} (${fmt(l.seconds)})${lyricNote}</span>
       <span class="acts">
-        <button data-act="use" class="${active ? '' : 'primary'}">${active ? 'Playing' : 'Loop this'}</button>
-        <button data-act="seam" title="Play the few seconds around the seam">Hear seam</button>
-        <button data-act="wav" title="Download one seamless cycle as WAV">WAV</button>
+        <button data-act="use" ${active ? 'class="primary" aria-pressed="true"' : ''}>${active ? 'Looping' : 'Loop'}</button>
+        <button data-act="seam" title="Play the four seconds before the seam">Preview seam</button>
+        <button data-act="wav" title="Export one cycle as WAV with loop points">WAV</button>
       </span>`;
     li.querySelector<HTMLButtonElement>('[data-act=use]')!.onclick = async () => {
       selectLoop(l);
@@ -457,7 +476,7 @@ function renderLoops() {
 
 $('render').addEventListener('click', async () => {
   const p = player;
-  if (!p?.analysis) { $('render-note').textContent = 'Wait a moment: the song is still being analysed.'; return; }
+  if (!p?.analysis) { $('render-note').textContent = 'Analysis is still running.'; return; }
   const btn = $<HTMLButtonElement>('render');
   const format = $<HTMLSelectElement>('fmt').value;
   btn.disabled = true;
@@ -473,22 +492,22 @@ $('render').addEventListener('click', async () => {
     const name = `${fileSafe(trackName())} - ${mins} min endless`;
     if (format === 'mp3') {
       btn.textContent = 'Encoding MP3…';
-      const mp3 = await encodeMp3InWorker(channels, sr, { title: `${song.title || 'stems'} (${mins} min endless)`, artist: song.artist, comment: 'Made with stems' },
+      const mp3 = await encodeMp3InWorker(channels, sr, { title: `${song.title || 'stems'} (${mins} min endless)`, artist: song.artist, comment: 'Rendered with stems' },
         (f) => { btn.textContent = `Encoding MP3… ${Math.round(f * 100)}%`; });
       download(mp3, `${name}.mp3`);
     } else {
       download(encodeWav(channels, sr, { cues }), `${name}.wav`);
     }
     $('render-note').textContent = p.currentSettings.range
-      ? `${fmt(secs)} long, staying inside your section.`
+      ? `${fmt(secs)}, within the section.`
       : realEnd
-      ? exact ? `${fmt(secs)} long, ending on the song's own outro.` : `Couldn't land exactly on the ending, so it's ${fmt(secs)} with a fade-out.`
+      ? exact ? `${fmt(secs)}, ending on the track's outro.` : `No path reached the outro at that length; ${fmt(secs)} with a fade-out.`
       : `${fmt(secs)} long with ${cues.length} seams.`;
   } catch (err) {
     $('render-note').textContent = `Couldn't render: ${errText(err)}`;
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Download';
+    btn.textContent = 'Render';
   }
 });
 
@@ -504,14 +523,14 @@ async function separate(method: 'dsp' | 'htdemucs') {
   show('sep-actions', false);
   show('mixer', false);
   show('sprog');
-  $('sep-note').textContent = method === 'htdemucs' ? 'The first time, this downloads the model (about 180 MB). Keep this page open.' : '';
+  $('sep-note').textContent = method === 'htdemucs' ? 'Downloading the model (about 180 MB, first use only).' : '';
   setStemProgress('Starting', 0);
   try {
     await p.separate(method, modelUrl.value || DEFAULT_MODEL_URL);
   } catch (err) {
     show('sprog', false);
     show('sep-actions');
-    $('sep-note').textContent = `Splitting failed: ${errText(err)}`;
+    $('sep-note').textContent = `Separation failed: ${errText(err)}`;
   }
 }
 $('sep-dsp').addEventListener('click', () => separate('dsp'));
@@ -527,9 +546,9 @@ function onStems(backend: string) {
   show('sprog', false);
   show('mixer');
   const st = p.stems!;
-  const how = st.method === 'htdemucs' ? `Best quality (${backend === 'cache' ? 'saved from last time' : backend})` : 'Quick split';
-  $('sep-note').textContent = `${how}.${st.hasVocals ? '' : ' This recording is mono, so vocals could not be separated.'}`;
-  $('sep-again').textContent = st.method === 'htdemucs' ? 'Use the quick split instead' : 'Try the best-quality split';
+  const how = st.method === 'htdemucs' ? `HTDemucs (${backend === 'cache' ? 'cached' : backend})` : 'Fast DSP separation';
+  $('sep-note').textContent = `${how}.${st.hasVocals ? '' : ' The source is mono, so vocals could not be isolated.'}`;
+  $('sep-again').textContent = st.method === 'htdemucs' ? 'Use fast separation instead' : 'Separate with HTDemucs';
   mute.length = solo.length = vol.length = 0;
   st.names.forEach(() => { mute.push(false); solo.push(false); vol.push(1); });
   const rows = $('stem-rows');
@@ -540,9 +559,9 @@ function onStems(backend: string) {
     row.innerHTML = `
       <span class="name">${name}</span>
       <input type="range" min="0" max="1.5" step="0.01" value="1" aria-label="${name} volume" />
-      <button data-k="m" aria-pressed="false" title="Mute ${name}">Mute</button>
-      <button data-k="s" aria-pressed="false" title="Solo ${name}">Solo</button>
-      <button data-k="l" aria-pressed="false" title="Keep ${name} on the selected loop">🔒</button>`;
+      <button data-k="m" aria-pressed="false" title="Mute ${name}">M</button>
+      <button data-k="s" aria-pressed="false" title="Solo ${name}">S</button>
+      <button data-k="l" aria-pressed="false" title="Lock ${name} to the current loop">Lock</button>`;
     const range = row.querySelector('input')!;
     range.addEventListener('input', () => { vol[i] = Number(range.value); pushGains(); });
     row.querySelector<HTMLButtonElement>('[data-k=m]')!.onclick = (e) => { mute[i] = !mute[i]; (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(mute[i])); pushGains(); };
@@ -551,9 +570,9 @@ function onStems(backend: string) {
       const btn = e.currentTarget as HTMLElement;
       if (p.locked[i]) { p.unlockStem(i); btn.setAttribute('aria-pressed', 'false'); return; }
       const loop = p.currentSettings.loop ?? p.loops[0];
-      if (!loop) { $('sep-note').textContent = 'There is no loop to lock to in this song.'; return; }
+      if (!loop) { $('sep-note').textContent = 'No loop available to lock to.'; return; }
       if (p.lockStem(i, loop)) btn.setAttribute('aria-pressed', 'true');
-      else $('sep-note').textContent = 'At least one stem has to keep following the song.';
+      else $('sep-note').textContent = 'At least one stem must stay unlocked.';
     };
     rows.appendChild(row);
   });
@@ -586,9 +605,7 @@ function setPreset(name: string) {
 }
 document.querySelectorAll<HTMLButtonElement>('[data-preset]').forEach((b) => b.addEventListener('click', () => setPreset(b.dataset.preset!)));
 $<HTMLInputElement>('vocalaware').addEventListener('change', (e) => {
-  player?.setVocalAware((e.target as HTMLInputElement).checked);
-  renderLoops();
-  refreshGraph();
+  void player?.setVocalAware((e.target as HTMLInputElement).checked);
 });
 
 // ---- Lyrics -------------------------------------------------------------------------
@@ -612,7 +629,7 @@ function renderLyrics() {
 function useLyrics(r: LyricsResult) {
   lyricLines = r.synced;
   $('lyr-results').innerHTML = '';
-  $('lyr-status').innerHTML = `${esc(r.title)} · ${esc(r.artist)}. <button class="link" id="lyr-other">Wrong song?</button>`;
+  $('lyr-status').innerHTML = `${esc(r.title)} · ${esc(r.artist)}. <button class="link" id="lyr-other">Wrong match</button>`;
   $('lyr-other').addEventListener('click', () => { void findLyrics(false); });
   renderLyrics();
 }
@@ -620,7 +637,7 @@ function useLyrics(r: LyricsResult) {
 /** Search LRCLIB; with `auto`, take the top result if it's synced and the same length. */
 async function findLyrics(auto: boolean) {
   const q = $<HTMLInputElement>('lyr-q').value.trim();
-  if (!q) { $('lyr-status').textContent = 'Type the song name and artist.'; return; }
+  if (!q) { $('lyr-status').textContent = 'Enter a title and artist.'; return; }
   lyricsSearched = true;
   const status = $('lyr-status');
   const list = $('lyr-results');
@@ -629,23 +646,23 @@ async function findLyrics(auto: boolean) {
   const src = player?.source;
   const duration = src ? src.length / src.sampleRate : 0;
   try {
-    const results = await searchLyrics(q, duration);
+    const results = await searchLyrics(q.replace(/\s+[-–—]\s+/g, ' '), duration);
     const top = results[0];
     if (auto && top?.synced.length && (!duration || Math.abs(top.duration - duration) <= 4)) { useLyrics(top); return; }
     if (!results.some((r) => r.synced.length)) {
-      status.textContent = results.length ? 'Found only unsynced lyrics for that search. Try a different spelling.' : 'No lyrics found. Try a different spelling.';
+      status.textContent = results.length ? 'LRCLIB only has unsynced lyrics for this search.' : 'LRCLIB has no lyrics for this search. Try other wording or load an .lrc file.';
       return;
     }
-    status.textContent = 'Pick the matching song:';
+    status.textContent = 'Select the matching recording:';
     for (const r of results.filter((x) => x.synced.length)) {
       const li = document.createElement('li');
       const off = duration && r.duration ? Math.abs(r.duration - duration) : 0;
-      li.innerHTML = `<span class="meta"><b>${esc(r.title)}</b><br>${esc(r.artist)}${r.album ? ` · ${esc(r.album)}` : ''} · ${fmt(r.duration)}${off > 4 ? ' (different length)' : ''}</span><button class="primary">Use</button>`;
+      li.innerHTML = `<span class="meta"><b>${esc(r.title)}</b><br>${esc(r.artist)}${r.album ? ` · ${esc(r.album)}` : ''} · ${fmt(r.duration)}${off > 4 ? ' (length differs)' : ''}</span><button class="primary">Use</button>`;
       li.querySelector('button')!.addEventListener('click', () => useLyrics(r));
       list.appendChild(li);
     }
   } catch (err) {
-    status.textContent = `Couldn't search lyrics: ${errText(err)}`;
+    status.textContent = `Lyrics search failed: ${errText(err)}`;
   }
 }
 $<HTMLFormElement>('lyr-form').addEventListener('submit', (e) => { e.preventDefault(); void findLyrics(false); });
@@ -686,8 +703,8 @@ $('share').addEventListener('click', async () => {
   out.value = url;
   show('share-out');
   out.select();
-  try { await navigator.clipboard.writeText(url); $('share').textContent = 'Link copied'; } catch { $('share').textContent = 'Copy the link below'; }
-  setTimeout(() => ($('share').textContent = 'Copy share link'), 2500);
+  try { await navigator.clipboard.writeText(url); $('share').textContent = 'Link copied'; } catch { $('share').textContent = 'Copy it below'; }
+  setTimeout(() => ($('share').textContent = 'Copy link'), 2500);
 });
 
 function applyShare() {
@@ -712,7 +729,7 @@ function applyShare() {
   }
   syncControls();
   const needsStems = !!(s.gains && Object.values(s.gains).some((g) => g !== 1)) || !!s.locks?.length;
-  $('share-banner').textContent = needsStems ? 'Shared settings applied. Split the stems (Stems tab) to hear the shared mix too.' : 'Shared settings applied.';
+  $('share-banner').textContent = needsStems ? 'Shared settings applied. Separate stems to apply the shared mix.' : 'Shared settings applied.';
   if (!needsStems) pendingShare = null;
 }
 
@@ -736,13 +753,15 @@ function applyShareMix() {
 
 // ---- Transport, sleep, lock screen ------------------------------------------------------
 
+const ICON_PLAY = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>';
 let shownPlaying: boolean | null = null;
 function updatePlayButton() {
   const on = !!player?.playing;
   if (on === shownPlaying) return;
   shownPlaying = on;
   const b = $('play');
-  b.textContent = on ? '❚❚' : '▶';
+  b.innerHTML = on ? ICON_PAUSE : ICON_PLAY;
   b.setAttribute('aria-label', on ? 'Pause' : 'Play');
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = on ? 'playing' : 'paused';
 }
@@ -821,7 +840,7 @@ const mt = $<HTMLInputElement>('multithread');
 mt.checked = crossOriginIsolated;
 if (!import.meta.env.PROD && !crossOriginIsolated) {
   mt.disabled = true;
-  $('multithread-note').textContent = '(dev server: start with STEMS_ISOLATE=1)';
+  $('multithread-note').textContent = 'Dev server started with STEMS_ISOLATE=0.';
 }
 mt.addEventListener('change', () => { void setIsolation(mt.checked); });
 
@@ -861,6 +880,7 @@ function frame() {
   }
   requestAnimationFrame(frame);
 }
+updatePlayButton();
 requestAnimationFrame(frame);
 
 // Expose for automated testing / console tinkering.
