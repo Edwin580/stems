@@ -39,6 +39,11 @@ export interface PlannerSettings {
   /** 0..1: how strongly to favour jumping at phrase boundaries. */
   phraseBias: number;
   loop: LoopCandidate | null;
+  /**
+   * Keep playback inside beats [start, end): Endless wanders only within it
+   * and jumps from its end back to its start. Null = the whole song.
+   */
+  range: { start: number; end: number } | null;
 }
 
 export const DEFAULT_SETTINGS: PlannerSettings = {
@@ -53,6 +58,7 @@ export const DEFAULT_SETTINGS: PlannerSettings = {
   loudnessMatch: true,
   phraseBias: 0.6,
   loop: null,
+  range: null,
 };
 
 /**
@@ -95,21 +101,47 @@ export class Planner {
 
   update(settings: Partial<PlannerSettings>) {
     const thrChanged = settings.threshold !== undefined && settings.threshold !== this.s.threshold;
+    const rangeChanged = settings.range !== undefined && JSON.stringify(settings.range) !== JSON.stringify(this.s.range);
     this.s = { ...this.s, ...settings };
-    if (thrChanged) this.rebuildGraph();
+    if (thrChanged || rangeChanged) this.rebuildGraph();
   }
 
-  /** Filter edges by threshold; relax it until a usable infinite core exists. */
+  /**
+   * Filter edges by threshold; relax it until a usable infinite core exists.
+   * "Usable" means a big enough core with about one exit per bar on average:
+   * a core held together by a handful of edges plays as one long fixed cycle.
+   */
   private rebuildGraph() {
     const n = this.a.beats.length;
+    const m = this.a.meter.beatsPerBar;
     let thr = this.s.threshold;
+    const r = this.s.range;
+    if (r) {
+      // Inside a section the wrap from its end to its start keeps every beat
+      // reachable, so the core is the whole section; jumps stay inside it.
+      // Relax strictness the same way: about one exit per bar.
+      const inside = (thr: number) => this.a.edges.map((l, i) => (i >= r.start && i + 1 < r.end ? l.filter((e) => e.cost <= thr && e.to >= r.start && e.to < r.end) : []));
+      let edges = inside(thr);
+      for (let attempt = 0; attempt < 11 && edges.reduce((k, l) => k + l.length, 0) < (r.end - r.start) / m; attempt++) {
+        thr *= 1.2;
+        edges = inside(thr);
+      }
+      this.edges = edges;
+      this.core = new Uint8Array(n);
+      this.core.fill(1, r.start, r.end);
+      this.coreSize = r.end - r.start;
+      this.effectiveThreshold = thr;
+      return;
+    }
     for (let attempt = 0; attempt < 12; attempt++) {
       const filtered = this.a.edges.map((l) => l.filter((e) => e.cost <= thr));
       const core = infiniteCore(n, filtered);
       let size = 0;
       for (let i = 0; i < n; i++) size += core[i];
-      if (size >= Math.min(n * 0.25, 32) || attempt === 11) {
-        this.edges = pruneToCore(filtered, core);
+      const pruned = pruneToCore(filtered, core);
+      const exits = pruned.reduce((k, l) => k + l.length, 0);
+      if ((size >= Math.min(n * 0.25, 32) && exits >= size / m) || attempt === 11) {
+        this.edges = pruned;
         this.core = core;
         this.coreSize = size;
         this.effectiveThreshold = thr;
@@ -176,7 +208,10 @@ export class Planner {
     const m = this.a.meter.beatsPerBar;
     const expected = Math.max(1, this.s.barsBetweenJumps) * m;
     const minStay = m;
+    const r = this.s.range;
+    if (r && (this.cursor < r.start || this.cursor >= r.end)) this.cursor = r.start;
     for (let i = this.cursor; i < n - 1; i++, this.beatsSinceJump++) {
+      if (r && i + 1 >= r.end) return this.take(r.end - 1, r.start, this.makeJump(r.end - 1, r.start));
       const out = this.edges[i];
       const forced = this.core[i] === 1 && (i + 1 >= n - 1 || this.core[i + 1] === 0);
       if (!out.length) continue;
@@ -197,14 +232,18 @@ export class Planner {
       if (!edge) continue;
       const jump = this.makeJump(edge.from, edge.to);
       if (!forced && (jump.rho < this.s.minRho || jump.spectralDb > this.s.maxSpectralDb)) continue;
-      this.recentTargets.push(edge.to);
-      if (this.recentTargets.length > 6) this.recentTargets.shift();
-      this.cursor = edge.to;
-      this.beatsSinceJump = 0;
-      const { spectralDb: _s, ...plain } = jump;
-      return plain;
+      return this.take(edge.from, edge.to, jump);
     }
     return null;
+  }
+
+  private take(_from: number, to: number, jump: Jump & { spectralDb: number }): Jump {
+    this.recentTargets.push(to);
+    if (this.recentTargets.length > 6) this.recentTargets.shift();
+    this.cursor = to;
+    this.beatsSinceJump = 0;
+    const { spectralDb: _s, ...plain } = jump;
+    return plain;
   }
 
   private chooseEdge(out: Edge[], forced: boolean): Edge | null {

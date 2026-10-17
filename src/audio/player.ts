@@ -1,20 +1,25 @@
 import { rescoreWithPenalty, type Analysis } from '../engine/analyze';
 import { coarseMono, type AudioSource } from '../engine/align';
 import { mixdown } from '../engine/dsp';
-import { findLoops, type LoopCandidate } from '../engine/loops';
+import { findLoops, loopAt, type LoopCandidate } from '../engine/loops';
 import { DEFAULT_SETTINGS, Planner, type PlannerSettings } from '../engine/planner';
 import { bakeLoop, planToLength, renderJumps, type RenderSources } from '../engine/render';
 import { vocalBoundaryPenalty, type Stems } from '../engine/separate';
 import type { Jump } from '../engine/splicer';
 import type { FromAnalysis } from './analysis.worker';
+import { BackgroundOutput } from './background';
 import * as cache from './cache';
 import { isBackendInitError } from './ort-fallback';
 import type { FromSeparation, ToSeparation } from './separation.worker';
 import type { FromWorklet, ToWorklet } from './worklet';
 import workletUrl from './worklet.ts?worker&url';
 
-/** How many jumps to keep queued in the worklet ahead of the playhead. */
-const QUEUE_AHEAD = 3;
+/**
+ * How many jumps to keep queued in the worklet ahead of the playhead. Generous,
+ * so playback never waits on the main thread (which browsers slow down in
+ * background tabs).
+ */
+const QUEUE_AHEAD = 6;
 
 export const DEFAULT_MODEL_URL = 'https://huggingface.co/timcsy/demucs-web-onnx/resolve/main/htdemucs_embedded.onnx';
 
@@ -23,6 +28,8 @@ export interface PlayerEvents {
   onAnalysis?: (fromCache: boolean) => void;
   onStemsProgress?: (stage: string, fraction: number) => void;
   onStems?: (stems: Stems, backend: string) => void;
+  /** Seams were re-scored (stems arrived or vocal awareness changed): loops may differ. */
+  onRescored?: () => void;
   onJump?: (jump: Jump) => void;
   onEnded?: () => void;
   onSleep?: () => void;
@@ -49,6 +56,7 @@ export class Player {
   readonly ctx: AudioContext;
   private node!: AudioWorkletNode;
   private master!: GainNode;
+  private out!: BackgroundOutput;
   source: AudioSource | null = null;
   analysis: Analysis | null = null;
   planner: Planner | null = null;
@@ -87,7 +95,8 @@ export class Player {
     await ctx.audioWorklet.addModule(workletUrl);
     p.node = new AudioWorkletNode(ctx, 'stems-splicer', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
     p.master = ctx.createGain();
-    p.node.connect(p.master).connect(ctx.destination);
+    p.node.connect(p.master);
+    p.out = new BackgroundOutput(ctx, p.master);
     p.node.port.onmessage = (e: MessageEvent<FromWorklet>) => p.onWorklet(e.data);
     return p;
   }
@@ -114,6 +123,7 @@ export class Player {
     this.analysis = null;
     this.planner = null;
     this.stems = null;
+    this.vocalPenalty = null;
     this.loops = [];
     this.gains = [1];
     this.locked = [false];
@@ -123,7 +133,7 @@ export class Player {
     this.ended = false;
     this.send({ type: 'load', groups: [channels], names: ['mix'] });
     this.coarse = coarseMono(this.source);
-    this.events.onProgress?.('Decoded — press play any time', 0.05);
+    this.events.onProgress?.('Decoded', 0.05);
 
     let analysis = hash ? await cache.getAnalysis(hash, sampleRate) : null;
     const fromCache = !!analysis;
@@ -225,6 +235,46 @@ export class Player {
 
   get currentSettings(): PlannerSettings { return this.settings; }
 
+  // ---- Section (start/end handles) ------------------------------------------
+
+  /** Beats a section may start or end on: every downbeat, plus the song's first and last beat. */
+  sectionStops(): number[] {
+    const a = this.analysis;
+    if (!a) return [];
+    const n = a.beats.length;
+    const stops = new Set<number>([0, n - 1]);
+    for (const d of this.downbeatIndices()) if (d < n - 1) stops.add(d);
+    return [...stops].sort((x, y) => x - y);
+  }
+
+  private downbeatIndices(): number[] {
+    const a = this.analysis!;
+    const m = a.meter.beatsPerBar;
+    return a.beats.map((_, i) => i).filter((i) => (((i - a.meter.phase) % m) + m) % m === 0);
+  }
+
+  /** A verified loop over exactly this section. */
+  loopFor(range: { start: number; end: number }): LoopCandidate {
+    return loopAt(this.analysis!, this.source!, this.coarse, range.start, range.end, Math.round(this.settings.fadeSec * this.source!.sampleRate), this.settings.autoFade);
+  }
+
+  /**
+   * Keep playback inside beats [start, end), or the whole song (null). Loop
+   * mode loops exactly that section; Endless wanders inside it.
+   */
+  setSection(range: { start: number; end: number } | null, loop?: LoopCandidate) {
+    if (!this.analysis || !this.planner) return;
+    // In Loop mode, "no section" means looping the whole song end to start.
+    const whole = { start: 0, end: this.analysis.beats.length - 1 };
+    const next = loop ?? (this.settings.mode === 'loop' ? this.loopFor(range ?? whole) : this.settings.loop);
+    this.settings = { ...this.settings, range, loop: next };
+    this.planner.update({ range, loop: next });
+    const b = this.analysis.beats;
+    const pos = this.position();
+    if (range && (pos < b[range.start] || pos >= b[range.end] - 0.25 * this.source!.sampleRate)) this.seek(b[range.start]);
+    else this.replan();
+  }
+
   updateSettings(s: Partial<PlannerSettings>) {
     const fadeChanged = (s.fadeSec !== undefined && s.fadeSec !== this.settings.fadeSec) || (s.autoFade !== undefined && s.autoFade !== this.settings.autoFade);
     this.settings = { ...this.settings, ...s };
@@ -234,9 +284,10 @@ export class Player {
     this.replan();
   }
 
+  /** Start playback. Call straight from a click/tap (see BackgroundOutput.start). */
   async play() {
     if (!this.source) return;
-    if (this.ctx.state !== 'running') await this.ctx.resume();
+    const started = this.out.start();
     if (!this.sleepAt) {
       this.master.gain.cancelScheduledValues(this.ctx.currentTime);
       this.master.gain.setValueAtTime(1, this.ctx.currentTime);
@@ -248,9 +299,13 @@ export class Player {
     this.playing = true;
     this.lastPosTime = this.ctx.currentTime;
     this.send({ type: 'play' });
+    await started;
   }
 
-  pause() { this.send({ type: 'pause' }); }
+  pause() {
+    this.send({ type: 'pause' });
+    this.out.stop();
+  }
 
   stop() {
     this.pause();
@@ -281,6 +336,9 @@ export class Player {
 
   get queue(): readonly Jump[] { return this.queued; }
 
+  /** Whether output runs through a media element, so it keeps playing in the background. */
+  get backgroundCapable(): boolean { return this.out.viaMediaElement; }
+
   // ---- Stems ----------------------------------------------------------------
 
   async separate(method: 'dsp' | 'htdemucs', modelUrl = DEFAULT_MODEL_URL): Promise<void> {
@@ -290,21 +348,24 @@ export class Player {
     let stems = method === 'htdemucs' && this.fileHash ? await cache.getStems(this.fileHash, src.sampleRate, method) : null;
     let backend = 'cache';
     if (!stems) {
-      const runWorker = (wasmOnly: boolean) => new Promise<{ stems: Stems; backend: string }>((resolve, reject) => {
+      const runWorker = (wasmOnly: boolean) => new Promise<{ stems: Stems; backend: string; vocalPenalty?: Float32Array }>((resolve, reject) => {
         const w = new Worker(new URL('./separation.worker.ts', import.meta.url), { type: 'module' });
         w.onmessage = (e: MessageEvent<FromSeparation>) => {
           const m = e.data;
           if (m.type === 'progress') this.events.onStemsProgress?.(m.stage, m.fraction);
           else {
             w.terminate();
-            if (m.type === 'done') resolve({ stems: m.stems, backend: m.backend }); else reject(new Error(m.message));
+            if (m.type === 'done') resolve({ stems: m.stems, backend: m.backend, vocalPenalty: m.vocalPenalty }); else reject(new Error(m.message));
           }
         };
         w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'Separation worker failed')); };
-        const msg: ToSeparation = { method, channels: src.channels, sampleRate: src.sampleRate, modelUrl, ...(wasmOnly ? { wasmOnly: true } : {}) };
+        const msg: ToSeparation = {
+          method, channels: src.channels, sampleRate: src.sampleRate, modelUrl, beats: this.analysis?.beats, hash: this.fileHash || undefined,
+          ...(wasmOnly ? { wasmOnly: true } : {}),
+        };
         w.postMessage(msg);
       });
-      let res: { stems: Stems; backend: string };
+      let res: { stems: Stems; backend: string; vocalPenalty?: Float32Array };
       try {
         res = await runWorker(false);
       } catch (err) {
@@ -313,38 +374,57 @@ export class Player {
         // WASM fallback is already dead. Retry once in a fresh worker whose
         // first session attempt is WASM-only; the model comes from cache.
         if (method !== 'htdemucs' || !isBackendInitError(err instanceof Error ? err.message : String(err))) throw err;
-        this.events.onStemsProgress?.('Backend failed to start — retrying with WASM only', 0);
+        this.events.onStemsProgress?.('Backend failed to start; retrying with WASM', 0);
         res = await runWorker(true);
       }
       stems = res.stems;
       backend = res.backend;
-      if (method === 'htdemucs' && this.fileHash) void cache.putStems(this.fileHash, src.sampleRate, stems);
+      this.vocalPenalty = res.vocalPenalty ?? null;
+    } else {
+      this.vocalPenalty = null;
     }
     if (token !== this.loadToken) return;
+    // Already shared when the worker produced them; cached stems still need copying.
     stems = { ...stems, channels: stems.channels.map((g) => g.map(shareable)) };
     this.stems = stems;
     this.gains = stems.names.map(() => 1);
     this.locked = stems.names.map(() => false);
     this.send({ type: 'sources', groups: stems.channels, names: stems.names });
-    this.applyVocalAwareness();
     this.events.onStems?.(stems, backend);
+    await this.applyVocalAwareness();
   }
+
+  /** Per-beat vocal seam penalty for the current stems, computed by the separation worker. */
+  private vocalPenalty: Float32Array | null = null;
 
   /** Re-score seams with (or without) the vocal-activity penalty. */
-  setVocalAware(on: boolean) {
+  setVocalAware(on: boolean): Promise<void> {
     this.vocalAware = on;
-    this.applyVocalAwareness();
+    return this.applyVocalAwareness();
   }
 
-  private applyVocalAwareness() {
+  /** Split into short steps so the page stays responsive (each is ~100 ms on a desktop). */
+  private async applyVocalAwareness(): Promise<void> {
+    const tick = () => new Promise((r) => setTimeout(r, 0));
     if (!this.analysis || !this.source) return;
     const vi = this.stems?.hasVocals ? this.stems.names.indexOf('vocals') : -1;
-    const pen = this.vocalAware && vi >= 0
-      ? vocalBoundaryPenalty(this.stems!.channels[vi], this.source.channels, this.analysis.beats, this.source.sampleRate)
-      : undefined;
+    let pen: Float32Array | undefined;
+    if (this.vocalAware && vi >= 0) {
+      if (!this.vocalPenalty) {
+        await tick();
+        this.vocalPenalty = vocalBoundaryPenalty(this.stems!.channels[vi], this.source.channels, this.analysis.beats, this.source.sampleRate);
+      }
+      pen = this.vocalPenalty;
+    }
     if (!pen && !this.analysis.boundaryPenalty) return;
+    const token = this.loadToken;
+    await tick();
+    if (token !== this.loadToken || !this.analysis) return;
     this.analysis = rescoreWithPenalty(this.analysis, pen);
+    await tick();
+    if (token !== this.loadToken) return;
     this.rebuild();
+    this.events.onRescored?.();
   }
 
   setGains(gains: number[]) {
@@ -379,21 +459,21 @@ export class Player {
     this.master.gain.setValueAtTime(1, this.ctx.currentTime);
     if (minutes <= 0) return;
     const fade = Math.min(20, minutes * 30);
-    const ms = minutes * 60_000;
-    this.sleepAt = Date.now() + ms;
+    const sec = minutes * 60;
+    this.sleepAt = Date.now() + sec * 1000;
+    // The fade is scheduled on the audio clock now, so it happens on time even
+    // when the page is in the background and timers run late.
+    const t = this.ctx.currentTime;
+    this.master.gain.setValueAtTime(1, t + sec - fade);
+    this.master.gain.linearRampToValueAtTime(0.0001, t + sec);
     this.sleepTimer = setTimeout(() => {
-      const t = this.ctx.currentTime;
-      this.master.gain.setValueAtTime(1, t);
-      this.master.gain.linearRampToValueAtTime(0.0001, t + fade);
-      this.sleepTimer = setTimeout(() => {
-        this.pause();
-        this.sleepAt = 0;
-        this.sleepTimer = null;
-        this.master.gain.cancelScheduledValues(this.ctx.currentTime);
-        this.master.gain.setValueAtTime(1, this.ctx.currentTime + 0.05);
-        this.events.onSleep?.();
-      }, fade * 1000);
-    }, Math.max(0, ms - fade * 1000));
+      this.pause();
+      this.sleepAt = 0;
+      this.sleepTimer = null;
+      this.master.gain.cancelScheduledValues(this.ctx.currentTime);
+      this.master.gain.setValueAtTime(1, this.ctx.currentTime + 0.2);
+      this.events.onSleep?.();
+    }, sec * 1000);
   }
 
   // ---- Export -------------------------------------------------------------------
@@ -414,10 +494,12 @@ export class Player {
     const a = this.analysis!, src = this.source!;
     const offline = new Planner(a, src, this.coarse, { ...this.settings, mode: 'endless' }, 1234);
     const sr = src.sampleRate;
+    // With a section set, the render starts at the section and stays inside it.
+    const start = this.settings.range ? a.beats[this.settings.range.start] : 0;
     let jumps: Jump[];
     let samples: number;
     let exact = false;
-    if (realEnding) {
+    if (realEnding && !this.settings.range) {
       const plan = planToLength(offline, minutes * 60);
       jumps = plan.jumps;
       samples = plan.samples;
@@ -425,8 +507,8 @@ export class Player {
     } else {
       samples = Math.round(minutes * 60 * sr);
       jumps = [];
-      offline.resetFrom(0);
-      let pos = 0, t = 0;
+      offline.resetFrom(start);
+      let pos = start, t = 0;
       for (;;) {
         const j = offline.next();
         if (!j || t + (j.at - pos) > samples) break;
@@ -435,9 +517,9 @@ export class Player {
         pos = j.to;
       }
     }
-    const channels = renderJumps(this.renderSources(), sr, jumps, samples, exact ? 0 : 2);
+    const channels = renderJumps(this.renderSources(), sr, jumps, samples, exact ? 0 : 2, exact ? 0 : start);
     const cues: { frame: number; label: string }[] = [];
-    let pos = 0, t = 0;
+    let pos = exact ? 0 : start, t = 0;
     for (const j of jumps) {
       t += j.at - pos;
       pos = j.to;

@@ -1,15 +1,18 @@
 # stems
 
-Drop in a song and it plays forever. stems is an infinite jukebox built so you can't hear the seams.
+Pick a song and it plays forever. stems is an infinite jukebox built so you can't hear the seams, and it keeps playing with your screen off.
 
 - **Endless:** wanders through the song without stopping, jumping between moments that are musically equivalent. Every jump is bar-aligned and prefers phrase boundaries. It is checked against several beats of context, phase-aligned to the exact sample, and gets an adaptive crossfade that never splits a drum hit. Small tempo and level differences across the jump are evened out.
-- **Perfect loop:** finds single-seam loops that have been verified at sample level. You can preview the seam, or export a WAV that loops gaplessly anywhere and carries sampler loop points.
+- **Section handles:** drag start and end under the song map (they snap to bar lines). Loop mode repeats exactly that part with a verified seam; Endless wanders only inside it.
+- **Loop:** finds single-seam loops that have been verified at sample level. You can preview the seam, or export a WAV that loops gaplessly anywhere and carries sampler loop points.
 - **Stems:** splits the song into drums, bass, vocals and other, using either a fast built-in DSP separator or HTDemucs running in your browser on WebGPU or WASM.
   - Seams avoid moments where someone is singing, and each stem gets its own crossfade.
   - You can mute or solo stems, or use the instrumental and a cappella presets.
   - You can **lock** a stem to a loop while the rest of the song wanders.
+- **Lyrics:** finds synced lyrics for the song on [LRCLIB](https://lrclib.net) (or load a `.lrc` file). They highlight as the song plays, tapping a line jumps there, and loops can be ranked to start on a lyric line.
+- **Background playback:** the engine's output plays through a media element, so it keeps going with the screen locked or in another tab, with lock-screen and headphone controls. Jumps are planned well ahead in the AudioWorklet, so a throttled page doesn't interrupt the music.
 - **Extras:**
-  - Render N minutes that end on the song's real outro.
+  - Save a long version (N minutes, optionally ending on the song's real outro) as MP3 or WAV, through your current stem mix.
   - Seam cue markers in the exported WAV.
   - A cache, so songs you've opened before load instantly.
   - Share links (settings only, never audio).
@@ -20,9 +23,9 @@ Everything runs locally on a custom DSP engine written in TypeScript, with an As
 
 ```bash
 npm install
-npm run dev         # http://localhost:5173 (STEMS_ISOLATE=1 npm run dev for multi-threaded mode)
-npm test            # 62 tests on synthetic songs with ground truth
-npm run build       # static site in dist/ — any static host works (GitHub Pages included)
+npm run dev         # http://localhost:5173 (STEMS_ISOLATE=0 npm run dev to test without shared memory)
+npm test            # Vitest suites (synthetic songs with ground truth)
+npm run build       # static site in dist/; any static host works, GitHub Pages included
 npm run build:wasm  # rebuild the SIMD FFT from assembly/fft.ts
 ```
 
@@ -35,22 +38,17 @@ assembly/     AssemblyScript SIMD FFT (compiled + embedded by scripts/build-wasm
 src/engine/   pure DSP: fft, wasm-fft, dsp, beats, features, structure, similarity, graph, align,
               seam, loops, planner, splicer, stemengine, separate, htdemucs, render, share, demo
 src/audio/    Web Audio glue: AudioWorklet, analysis + separation workers, Player, IndexedDB cache
-src/lyrics/   LRC parsing, synced-line lookup, lyric-aligned loop ranking
-src/sources/  YouTube (IFrame player + optional Data API search), Spotify (PKCE auth, Web API search, Playback SDK)
+src/lyrics/   LRC parsing, LRCLIB search, ID3 song names, synced-line lookup, lyric-aligned loop ranking
 src/ui/       page controller, song-map visualiser, styles
 public/       PWA manifest, service worker, icons, hosting headers
 tests/        Vitest suites
 ```
 
-## Sources: YouTube and Spotify
+## Spotify and YouTube
 
-The endless engine needs a decoded audio buffer, so it works on uploaded files (and the demo track). YouTube and Spotify play through their official players, in the same app:
+stems needs the song's actual audio to find seams and split stems. Spotify and YouTube only play audio inside their own players and never hand the samples to other apps, so songs from them can't be used directly. Use an audio file you have.
 
-- **YouTube** — paste any watch / youtu.be / embed / Shorts link; it plays embedded. Set `VITE_YOUTUBE_API_KEY` (Data API v3) for in-app search.
-- **Spotify** — connect with OAuth (PKCE, so no client secret in the browser). Search tracks, play full songs in-app with the Web Playback SDK (needs Premium), loop the whole track with Spotify's native repeat, or loop an A-B section by seeking back to its start. Spotify's SDK is an encrypted stream with playback control and metadata only — it exposes no audio samples, so beat-matched seamless loops, stems and WAV export still require the same song as an uploaded file (there is a one-click local-file button in the Spotify panel for that).
+## Third-party code
 
-Setup: the app's public Client ID is built in as the default, so Spotify works out of the box. To use your own app instead, copy `.env.example` to `.env`, create a free app at https://developer.spotify.com/dashboard, and register the app's root URL as a Redirect URI (local dev: `http://127.0.0.1:5173/` — Spotify rejects `localhost`, so open the dev server via 127.0.0.1; production: `https://edwin580.github.io/stems/`).
-
-## Lyrics
-
-Load a `.lrc` file alongside any song: lyrics highlight in sync with playback, clicking a line seeks to it, and the loop list can re-rank candidates so loops start on lyric lines.
+- MP3 encoding uses [lamejs](https://github.com/zhuker/lamejs) (`@breezystack/lamejs`, LGPL-3.0), loaded in a worker only when you save an MP3.
+- HTDemucs weights are Meta's (MIT), loaded from a public ONNX export; the model URL can be changed under Advanced.

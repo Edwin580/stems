@@ -3,17 +3,16 @@
 // 1. Offline app shell: network-first for navigations, cache-first for built
 //    assets (hashed filenames never change). Models are cached separately by
 //    the separation worker; audio never touches this cache.
-// 2. Opt-in cross-origin isolation ("multi-threaded mode") on static hosts that
-//    can't set headers (GitHub Pages): while the page has stored the marker
-//    below, same-origin responses get COOP/COEP/CORP headers, unlocking
-//    SharedArrayBuffer and multi-threaded WASM. It's opt-in because it blocks
-//    third-party players (YouTube, Spotify). See src/ui/isolation.ts.
-const CACHE = 'stems-shell-v3';
+// 2. Cross-origin isolation on static hosts that can't set headers (GitHub
+//    Pages): unless the page has stored the opt-out marker below, same-origin
+//    responses get COOP/COEP/CORP headers, unlocking SharedArrayBuffer and
+//    multi-threaded WASM. See src/ui/isolation.ts.
+const CACHE = 'stems-shell-v4';
 const SCOPE = new URL(self.registration.scope);
 const COI_CACHE = 'stems-coi';
-const COI_MARKER = new URL('./__coi-on', SCOPE).href;
-let coiOn = false;
-const refreshCoi = () => caches.open(COI_CACHE).then((c) => c.match(COI_MARKER)).then((r) => { coiOn = !!r; }).catch(() => { coiOn = false; });
+const COI_MARKER = new URL('./__coi-off', SCOPE).href;
+let coiOn = true;
+const refreshCoi = () => caches.open(COI_CACHE).then((c) => c.match(COI_MARKER)).then((r) => { coiOn = !r; }).catch(() => { coiOn = true; });
 refreshCoi();
 
 self.addEventListener('install', (e) => {
@@ -42,7 +41,7 @@ self.addEventListener('fetch', (e) => {
   const rel = url.pathname.slice(SCOPE.pathname.length);
   if (!url.pathname.startsWith(SCOPE.pathname) || rel.startsWith('previews/')) return;
   if (req.mode === 'navigate') {
-    // Re-read the opt-in marker on every navigation (the toggle reloads the page).
+    // Re-read the opt-out marker on every navigation (the toggle reloads the page).
     e.respondWith(refreshCoi().then(() => fetch(req)).then((res) => {
       if (res.ok) {
         const copy = res.clone();
