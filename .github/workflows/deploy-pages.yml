@@ -1,0 +1,42 @@
+name: Deploy site
+
+# Builds main and publishes it to main:/docs (GitHub Pages source: main /docs).
+# The bot's own commits only touch docs/ and are made with GITHUB_TOKEN, so they
+# never re-trigger this workflow.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: site
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+      - name: Build
+        working-directory: src
+        run: |
+          npm ci
+          npm run build
+      - name: Publish
+        run: src/scripts/publish-docs.sh site "$GITHUB_WORKSPACE/src/dist" . "Deploy ${GITHUB_SHA::7} to Pages"
