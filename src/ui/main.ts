@@ -1,4 +1,5 @@
 import { clearCache } from '../audio/cache';
+import { encodeMp3InWorker } from '../audio/mp3-client';
 import { DEFAULT_MODEL_URL, Player, sharedMemory } from '../audio/player';
 import { synthSong } from '../engine/demo';
 import type { LoopCandidate } from '../engine/loops';
@@ -6,16 +7,11 @@ import { encodeWav } from '../engine/render';
 import { decodeShare, encodeShare, scaleLoop, type ShareState } from '../engine/share';
 import { costToQuality } from '../engine/similarity';
 import { wasmFFTAvailable } from '../engine/wasm-fft';
+import { alignLoopsToLyrics, linesInLoop } from '../lyrics/loopalign';
+import { lineAt, parseLrc, type LyricLine } from '../lyrics/lrc';
+import { searchLyrics, songInfo, type LyricsResult, type SongInfo } from '../lyrics/search';
 import { ensureIsolationState, setIsolation } from './isolation';
 import { Visualizer } from './visualizer';
-import { parseLrc, lineAt, type LyricLine } from '../lyrics/lrc';
-import { alignLoopsToLyrics, linesInLoop } from '../lyrics/loopalign';
-import { parseYouTubeId, searchYouTube, YouTubeSource } from '../sources/youtube';
-import {
-  handleSpotifyCallback, normalizeSpotifySection, searchSpotifyTracks, spotifyConfigured, spotifyLogin,
-  spotifyLogout, spotifySectionDue, spotifyToken, SpotifyWebPlayer, type SpotifyPlaybackSnapshot,
-  type SpotifySection, type SpotifyTrack,
-} from '../sources/spotify';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const fmt = (sec: number) => {
@@ -24,14 +20,19 @@ const fmt = (sec: number) => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}` : `${m}:${String(r).padStart(2, '0')}`;
 };
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+type Tab = 'loops' | 'stems' | 'lyrics' | 'save' | 'tune';
 
 let player: Player | null = null;
-let trackName = '';
-let tab: 'endless' | 'loop' | 'stems' = 'endless';
+let song: SongInfo = { title: '', artist: '' };
+let tab: Tab = 'loops';
 let pendingShare: ShareState | null = decodeShare(location.hash);
 const viz = new Visualizer($<HTMLCanvasElement>('viz'));
 
 function show(id: string, on = true) { $(id).classList.toggle('hidden', !on); }
+const trackName = () => [song.artist, song.title].filter(Boolean).join(' - ') || 'stems';
+const fileSafe = (s: string) => s.replace(/[\\/:*?"<>|]/g, '').trim() || 'stems';
 
 function setProgress(stage: string, f: number) {
   $('stage').textContent = stage;
@@ -45,23 +46,28 @@ function setStemProgress(stage: string, f: number) {
   $('sbar-fill').style.width = `${Math.round(f * 100)}%`;
 }
 
-// ---- Environment notes --------------------------------------------------------
+function showError(msg: string) {
+  $('error').textContent = msg;
+  show('error');
+}
+
 $('env-note').textContent = [
-  wasmFFTAvailable() ? 'WASM SIMD FFT' : 'JS FFT (no WASM SIMD)',
+  wasmFFTAvailable() ? 'WASM SIMD FFT' : 'JS FFT',
   sharedMemory() ? 'shared memory' : 'copied buffers',
 ].join(' · ');
 
 if (pendingShare) {
-  const b = $('share-banner');
-  b.innerHTML = `Shared ${pendingShare.mode === 'loop' ? 'perfect loop' : 'endless mix'}${pendingShare.n ? ` of <b>${esc(pendingShare.n)}</b>` : ''}. Open the same audio file to hear it — links never contain audio.`;
+  $('share-banner').innerHTML = `Someone shared a ${pendingShare.mode === 'loop' ? 'loop' : 'endless mix'}${pendingShare.n ? ` of <b>${esc(pendingShare.n)}</b>` : ''}. Choose the same song file to hear it.`;
   show('share-banner');
 }
+
+// ---- Loading ----------------------------------------------------------------------
 
 async function ensurePlayer(): Promise<Player> {
   if (player) return player;
   player = await Player.create();
   player.events = {
-    onProgress: setProgress,
+    onProgress: (stage, f) => setProgress(friendlyStage(stage), f),
     onAnalysis: (fromCache) => onAnalysed(fromCache),
     onStemsProgress: setStemProgress,
     onStems: (_s, backend) => onStems(backend),
@@ -71,6 +77,13 @@ async function ensurePlayer(): Promise<Player> {
   };
   viz.onSeek = (s) => player?.seek(s);
   return player;
+}
+
+/** Engine stage names, in plain words. */
+function friendlyStage(stage: string): string {
+  if (/^Decoded/.test(stage)) return 'Ready to play · finding the seams';
+  if (/loops/i.test(stage)) return 'Finding loops';
+  return `Listening to the song · ${stage.toLowerCase()}`;
 }
 
 /** Resolve once the player has decoded audio (analysis may still be running). */
@@ -85,42 +98,58 @@ function waitForSource(p: Player, done: Promise<void>): Promise<void> {
 
 async function load(source: { file?: File; demo?: boolean }) {
   show('error', false);
-  show('drop', false);
+  show('home', false);
   try {
     const p = await ensurePlayer();
     p.source = null;
     show('app');
     show('aprog');
-    show('mixer', false);
-    show('sprog', false);
-    show('sep-actions');
-    setProgress('Decoding', 0);
-    $('stats').innerHTML = '';
-    $('loops').innerHTML = '';
-    $('sep-note').textContent = 'HTDemucs downloads a ~180 MB model once (cached), then runs on your GPU (WebGPU) or CPU. Expect a few minutes per song on CPU.';
+    resetSongUi();
+    setProgress('Opening the song', 0);
     let loaded: Promise<void>;
     if (source.file) {
-      trackName = source.file.name.replace(/\.[^.]+$/, '');
+      song = await songInfo(source.file);
       loaded = p.loadFile(source.file);
     } else {
-      trackName = 'Demo track (synthesised in your browser)';
+      song = { title: 'Demo track', artist: 'made in your browser' };
       loaded = p.loadChannels(synthSong({ sampleRate: p.ctx.sampleRate }).channels);
     }
-    $('track').textContent = trackName;
+    $('track').textContent = song.title || 'Untitled';
+    $('artist').textContent = song.artist;
+    $<HTMLInputElement>('lyr-q').value = [song.title, song.artist].filter(Boolean).join(' ');
     await waitForSource(p, loaded);
     if (p.source) onDecoded(p);
     await loaded;
   } catch (err) {
     show('app', false);
-    show('drop');
-    $('error').textContent = `Couldn't process that file: ${err instanceof Error ? err.message : String(err)}`;
-    show('error');
+    show('home');
+    showError(`Couldn't open that file: ${errText(err)}. Try an MP3, M4A or WAV.`);
   }
+}
+
+function resetSongUi() {
+  $<HTMLButtonElement>('play').disabled = true;
+  $('stats').innerHTML = '';
+  $('loops').innerHTML = '<li class="empty">Looking for loops…</li>';
+  show('mixer', false);
+  show('sprog', false);
+  show('sep-actions');
+  $('sep-note').textContent = '';
+  lyricLines = [];
+  lyricsSearched = false;
+  $('lyrics').innerHTML = '';
+  $('lyr-results').innerHTML = '';
+  $('lyr-status').textContent = '';
+  $('render-note').textContent = '';
+  show('share-out', false);
+  setMode('endless', false);
 }
 
 function onDecoded(p: Player) {
   viz.setSong(p.source!.channels, null);
+  $<HTMLButtonElement>('play').disabled = false;
   updateMediaSession();
+  updateModeHint();
 }
 
 function onAnalysed(fromCache: boolean) {
@@ -131,21 +160,61 @@ function onAnalysed(fromCache: boolean) {
   const seams = a.edges.reduce((n, l) => n + l.length, 0);
   const tempo = a.tempoSpread > 1.03 ? `${a.bpm.toFixed(1)} BPM (drifts ±${(((a.tempoSpread - 1) / 2) * 100).toFixed(0)}%)` : `${a.bpm.toFixed(1)} BPM`;
   $('stats').innerHTML = [
-    fmt(src.length / src.sampleRate),
-    tempo,
-    `${a.meter.beatsPerBar}/4`,
-    `${a.beats.length} beats · ${Math.round(bars)} bars`,
-    `${seams} candidate seams`,
-    `${p.loops.length} perfect loops`,
-    fromCache ? 'analysis from cache' : '',
+    fmt(src.length / src.sampleRate), tempo, `${a.meter.beatsPerBar}/4`, `${Math.round(bars)} bars`,
+    `${seams} candidate seams`, `${p.loops.length} loops`, fromCache ? 'analysis from cache' : '',
   ].filter(Boolean).map((s) => `<span>${s}</span>`).join('');
   viz.setAnalysis(a);
   $<HTMLInputElement>('thr').value = String(p.currentSettings.threshold);
   syncControls();
   renderLoops();
   applyShare();
-  setTab(tab);
+  updateModeHint();
 }
+
+// ---- Mode (endless / loop) ------------------------------------------------------------
+
+function currentMode(): 'endless' | 'loop' { return player?.currentSettings.mode ?? 'endless'; }
+
+function setMode(mode: 'endless' | 'loop', apply = true) {
+  document.querySelectorAll<HTMLButtonElement>('.seg [data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+  if (apply) player?.updateSettings({ mode });
+  refreshGraph();
+  renderLoops();
+  updateModeHint();
+}
+document.querySelectorAll<HTMLButtonElement>('.seg [data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode as 'endless' | 'loop')));
+
+function updateModeHint() {
+  const p = player;
+  const el = $('mode-hint');
+  if (!p?.source) { el.textContent = ''; return; }
+  if (!p.analysis) { el.textContent = 'You can press play now. Seamless jumps switch on in a few seconds.'; return; }
+  if (currentMode() === 'endless') {
+    el.textContent = 'Endless: moves through the song, jumping between moments that match. It never ends.';
+    return;
+  }
+  const loop = p.currentSettings.loop;
+  const i = loop ? displayedLoops().findIndex((l) => l.startSample === loop.startSample && l.endSample === loop.endSample) : -1;
+  el.textContent = loop
+    ? `Loop: repeating ${i >= 0 ? `loop ${i + 1}` : 'a section'} (${loop.bars} bars, ${fmt(loop.startSample / p.source.sampleRate)}–${fmt(loop.endSample / p.source.sampleRate)}) forever. Pick another in Loops.`
+    : 'Loop: no seamless loop was found in this song. Endless still works.';
+}
+
+// ---- Tabs ---------------------------------------------------------------------------
+
+function setTab(t: Tab) {
+  tab = t;
+  document.querySelectorAll<HTMLButtonElement>('.tab').forEach((b) => {
+    const on = b.dataset.tab === t;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+  for (const k of ['loops', 'stems', 'lyrics', 'save', 'tune']) show(`panel-${k}`, k === t);
+  if (t === 'lyrics' && !lyricsSearched && !lyricLines.length && player?.source) void findLyrics(true);
+}
+document.querySelectorAll<HTMLButtonElement>('.tab').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab as Tab)));
+
+// ---- Tune ---------------------------------------------------------------------------
 
 function refreshGraph() {
   const pl = player?.planner;
@@ -154,7 +223,7 @@ function refreshGraph() {
   const n = player!.analysis!.beats.length;
   const pct = Math.round((100 * pl.coreSize) / n);
   const relaxed = pl.effectiveThreshold > pl.settings.threshold + 1e-6;
-  $('thr-note').textContent = `${pct}% of the song is in the endless loop${relaxed ? ' (auto-relaxed: too strict for this song)' : ''}.`;
+  $('thr-note').textContent = `${pct}% of the song is reachable${relaxed ? ' (loosened automatically: too strict for this song)' : ''}.`;
 }
 
 function syncControls() {
@@ -187,17 +256,8 @@ for (const id of ['bars', 'thr', 'fade', 'phrase', 'barlock', 'autofade', 'loudn
     syncControls();
   });
 }
-$('lyric-align').addEventListener('change', () => renderLoops());
 
-function setTab(t: 'endless' | 'loop' | 'stems') {
-  tab = t;
-  document.querySelectorAll<HTMLButtonElement>('.tab').forEach((b) => b.classList.toggle('active', b.dataset.mode === t));
-  for (const k of ['endless', 'loop', 'stems']) show(`panel-${k}`, k === t);
-  // The stems tab doesn't change the playback mode.
-  if (t !== 'stems') player?.updateSettings({ mode: t });
-  refreshGraph();
-}
-document.querySelectorAll<HTMLButtonElement>('.tab').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.mode as typeof tab)));
+// ---- Loops --------------------------------------------------------------------------
 
 function selectLoop(loop: LoopCandidate) {
   const p = player;
@@ -205,8 +265,7 @@ function selectLoop(loop: LoopCandidate) {
   p.updateSettings({ loop, mode: 'loop' });
   // Locked stems follow the selected loop.
   p.locked.forEach((l, i) => { if (l) { p.unlockStem(i); p.lockStem(i, loop); } });
-  renderLoops();
-  refreshGraph();
+  setMode('loop', false);
 }
 
 function download(blob: Blob, name: string) {
@@ -215,10 +274,11 @@ function download(blob: Blob, name: string) {
   a.href = url;
   a.download = name;
   a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 let lyricLines: LyricLine[] = [];
+let lyricsSearched = false;
 
 function displayedLoops(): LoopCandidate[] {
   const p = player;
@@ -226,71 +286,91 @@ function displayedLoops(): LoopCandidate[] {
   const align = lyricLines.length > 0 && $<HTMLInputElement>('lyric-align').checked;
   return align ? alignLoopsToLyrics(p.loops, lyricLines, p.source!.sampleRate) : p.loops;
 }
+$('lyric-align').addEventListener('change', () => renderLoops());
 
 function renderLoops() {
   const p = player;
   const ol = $('loops');
-  ol.innerHTML = '';
   if (!p?.analysis) return;
+  ol.innerHTML = '';
   const loops = displayedLoops();
+  $('lyric-align-row').classList.toggle('hidden', lyricLines.length === 0);
   if (!loops.length) {
-    ol.innerHTML = '<li>No loop of 8+ bars passed verification for this track. Endless mode still works.</li>';
+    ol.innerHTML = '<li class="empty">No loop of 8+ bars passed the seam check for this song. Endless mode still works.</li>';
     return;
   }
   const sr = p.source!.sampleRate;
-  const sel = p.currentSettings.loop;
-  $('lyric-align-row').classList.toggle('hidden', lyricLines.length === 0);
+  const sel = currentMode() === 'loop' ? p.currentSettings.loop : null;
   loops.forEach((l, i) => {
     const li = document.createElement('li');
-    if (sel && sel.startSample === l.startSample && sel.endSample === l.endSample) li.classList.add('sel');
+    const active = !!sel && sel.startSample === l.startSample && sel.endSample === l.endSample;
+    li.classList.toggle('sel', active);
     const lyricNote = lyricLines.length ? ` · ${linesInLoop(l, lyricLines, sr).length} lyric lines` : '';
     li.innerHTML = `
-      <span class="q">${l.quality}%</span>
-      <span class="meta"><b>#${i + 1} · ${l.bars} bars · ${fmt(l.seconds)}</b><br>${fmt(l.startSample / sr)} → ${fmt(l.endSample / sr)} · phase ${(Math.max(0, l.rho) * 100).toFixed(0)}% · fade ${Math.round((l.fade / sr) * 1000)} ms${lyricNote}</span>
+      <span class="q" title="Seam match">${l.quality}%</span>
+      <span class="meta"><b>Loop ${i + 1} · ${l.bars} bars</b><br>${fmt(l.startSample / sr)}–${fmt(l.endSample / sr)} · ${fmt(l.seconds)} long${lyricNote}</span>
       <span class="acts">
-        <button data-act="use" class="primary">Loop this</button>
-        <button data-act="seam">Hear seam</button>
-        <button data-act="wav">WAV</button>
+        <button data-act="use" class="${active ? '' : 'primary'}">${active ? 'Playing' : 'Loop this'}</button>
+        <button data-act="seam" title="Play the few seconds around the seam">Hear seam</button>
+        <button data-act="wav" title="Download one seamless cycle as WAV">WAV</button>
       </span>`;
-    li.querySelector<HTMLButtonElement>('[data-act=use]')!.onclick = () => selectLoop(l);
+    li.querySelector<HTMLButtonElement>('[data-act=use]')!.onclick = async () => {
+      selectLoop(l);
+      if (!p.playing) await togglePlay();
+    };
     li.querySelector<HTMLButtonElement>('[data-act=seam]')!.onclick = async () => {
       selectLoop(l);
       p.seek(Math.max(l.startSample, l.endSample - 4 * sr));
-      if (!p.playing) await p.play();
-      updatePlayButton();
+      if (!p.playing) await togglePlay();
     };
     li.querySelector<HTMLButtonElement>('[data-act=wav]')!.onclick = () => {
       const baked = p.exportLoop(l);
       const suffix = p.stems && p.gains.some((g) => g !== 1) ? ' (custom mix)' : '';
-      download(encodeWav(baked, sr, { loop: { start: 0, end: baked[0].length } }), `${trackName} - seamless loop ${i + 1}${suffix}.wav`);
+      download(encodeWav(baked, sr, { loop: { start: 0, end: baked[0].length } }), `${fileSafe(trackName())} - loop ${i + 1}${suffix}.wav`);
     };
     ol.appendChild(li);
   });
 }
 
+// ---- Save ---------------------------------------------------------------------------
+
 $('render').addEventListener('click', async () => {
   const p = player;
-  if (!p?.analysis) return;
+  if (!p?.analysis) { $('render-note').textContent = 'Wait a moment: the song is still being analysed.'; return; }
   const btn = $<HTMLButtonElement>('render');
+  const format = $<HTMLSelectElement>('fmt').value;
   btn.disabled = true;
   btn.textContent = 'Rendering…';
+  $('render-note').textContent = '';
   await new Promise((r) => setTimeout(r, 30));
   try {
     const mins = Math.max(1, Math.min(60, Number($<HTMLInputElement>('mins').value) || 10));
     const realEnd = $<HTMLInputElement>('realend').checked;
     const { channels, cues, exact } = p.exportEndless(mins, realEnd);
-    const secs = channels[0].length / p.source!.sampleRate;
+    const sr = p.source!.sampleRate;
+    const secs = channels[0].length / sr;
+    const name = `${fileSafe(trackName())} - ${mins} min endless`;
+    if (format === 'mp3') {
+      btn.textContent = 'Encoding MP3…';
+      const mp3 = await encodeMp3InWorker(channels, sr, { title: `${song.title || 'stems'} (${mins} min endless)`, artist: song.artist, comment: 'Made with stems' },
+        (f) => { btn.textContent = `Encoding MP3… ${Math.round(f * 100)}%`; });
+      download(mp3, `${name}.mp3`);
+    } else {
+      download(encodeWav(channels, sr, { cues }), `${name}.wav`);
+    }
     $('render-note').textContent = realEnd
-      ? exact ? `${fmt(secs)} long, ending on the song's own outro (length snaps to whole bars).` : `Couldn't land exactly on the ending; rendered ${fmt(secs)} with a fade.`
-      : `${fmt(secs)} with ${cues.length} seams (marked as cue points).`;
-    download(encodeWav(channels, p.source!.sampleRate, { cues }), `${trackName} - ${mins} min endless.wav`);
+      ? exact ? `${fmt(secs)} long, ending on the song's own outro.` : `Couldn't land exactly on the ending, so it's ${fmt(secs)} with a fade-out.`
+      : `${fmt(secs)} long with ${cues.length} seams.`;
+  } catch (err) {
+    $('render-note').textContent = `Couldn't render: ${errText(err)}`;
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Download WAV';
+    btn.textContent = 'Download';
   }
 });
 
-// ---- Stems ----------------------------------------------------------------------
+// ---- Stems --------------------------------------------------------------------------
+
 const modelUrl = $<HTMLInputElement>('model-url');
 modelUrl.value = (() => { try { return localStorage.getItem('stems.modelUrl') || DEFAULT_MODEL_URL; } catch { return DEFAULT_MODEL_URL; } })();
 modelUrl.addEventListener('change', () => { try { localStorage.setItem('stems.modelUrl', modelUrl.value); } catch { /* ignore */ } });
@@ -299,18 +379,21 @@ async function separate(method: 'dsp' | 'htdemucs') {
   const p = player;
   if (!p?.source) return;
   show('sep-actions', false);
+  show('mixer', false);
   show('sprog');
+  $('sep-note').textContent = method === 'htdemucs' ? 'The first time, this downloads the model (about 180 MB). Keep this page open.' : '';
   setStemProgress('Starting', 0);
   try {
     await p.separate(method, modelUrl.value || DEFAULT_MODEL_URL);
   } catch (err) {
     show('sprog', false);
     show('sep-actions');
-    $('sep-note').textContent = `Separation failed: ${err instanceof Error ? err.message : String(err)}`;
+    $('sep-note').textContent = `Splitting failed: ${errText(err)}`;
   }
 }
 $('sep-dsp').addEventListener('click', () => separate('dsp'));
 $('sep-ml').addEventListener('click', () => separate('htdemucs'));
+$('sep-again').addEventListener('click', () => separate(player?.stems?.method === 'htdemucs' ? 'dsp' : 'htdemucs'));
 
 const mute: boolean[] = [];
 const solo: boolean[] = [];
@@ -321,7 +404,9 @@ function onStems(backend: string) {
   show('sprog', false);
   show('mixer');
   const st = p.stems!;
-  $('sep-note').textContent = `${st.method === 'htdemucs' ? 'HTDemucs' : 'Built-in DSP'} stems (${backend})${st.hasVocals ? '' : ' — mono source: vocals could not be isolated'}. Seams re-scored${p.vocalAware && st.hasVocals ? ' to avoid sung passages' : ''}.`;
+  const how = st.method === 'htdemucs' ? `Best quality (${backend === 'cache' ? 'saved from last time' : backend})` : 'Quick split';
+  $('sep-note').textContent = `${how}.${st.hasVocals ? '' : ' This recording is mono, so vocals could not be separated.'}`;
+  $('sep-again').textContent = st.method === 'htdemucs' ? 'Use the quick split instead' : 'Try the best-quality split';
   mute.length = solo.length = vol.length = 0;
   st.names.forEach(() => { mute.push(false); solo.push(false); vol.push(1); });
   const rows = $('stem-rows');
@@ -332,9 +417,9 @@ function onStems(backend: string) {
     row.innerHTML = `
       <span class="name">${name}</span>
       <input type="range" min="0" max="1.5" step="0.01" value="1" aria-label="${name} volume" />
-      <button data-k="m" aria-pressed="false" title="Mute">M</button>
-      <button data-k="s" aria-pressed="false" title="Solo">S</button>
-      <button data-k="l" aria-pressed="false" title="Lock to the selected loop">🔒</button>`;
+      <button data-k="m" aria-pressed="false" title="Mute ${name}">Mute</button>
+      <button data-k="s" aria-pressed="false" title="Solo ${name}">Solo</button>
+      <button data-k="l" aria-pressed="false" title="Keep ${name} on the selected loop">🔒</button>`;
     const range = row.querySelector('input')!;
     range.addEventListener('input', () => { vol[i] = Number(range.value); pushGains(); });
     row.querySelector<HTMLButtonElement>('[data-k=m]')!.onclick = (e) => { mute[i] = !mute[i]; (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(mute[i])); pushGains(); };
@@ -343,9 +428,9 @@ function onStems(backend: string) {
       const btn = e.currentTarget as HTMLElement;
       if (p.locked[i]) { p.unlockStem(i); btn.setAttribute('aria-pressed', 'false'); return; }
       const loop = p.currentSettings.loop ?? p.loops[0];
-      if (!loop) { $('sep-note').textContent = 'No perfect loop available to lock to.'; return; }
+      if (!loop) { $('sep-note').textContent = 'There is no loop to lock to in this song.'; return; }
       if (p.lockStem(i, loop)) btn.setAttribute('aria-pressed', 'true');
-      else $('sep-note').textContent = 'At least one stem must keep following the song.';
+      else $('sep-note').textContent = 'At least one stem has to keep following the song.';
     };
     rows.appendChild(row);
   });
@@ -383,7 +468,81 @@ $<HTMLInputElement>('vocalaware').addEventListener('change', (e) => {
   refreshGraph();
 });
 
-// ---- Share links ------------------------------------------------------------------
+// ---- Lyrics -------------------------------------------------------------------------
+
+let lyricActiveIdx = -1;
+
+function renderLyrics() {
+  const box = $('lyrics');
+  box.innerHTML = '';
+  lyricActiveIdx = -1;
+  lyricLines.forEach((l) => {
+    const d = document.createElement('div');
+    d.className = 'line';
+    d.innerHTML = `<span class="t">${fmt(l.time)}</span><span>${esc(l.text)}</span>`;
+    d.addEventListener('click', () => player?.seek(Math.round(l.time * player!.source!.sampleRate)));
+    box.appendChild(d);
+  });
+  renderLoops();
+}
+
+function useLyrics(r: LyricsResult) {
+  lyricLines = r.synced;
+  $('lyr-results').innerHTML = '';
+  $('lyr-status').innerHTML = `${esc(r.title)} · ${esc(r.artist)}. <button class="link" id="lyr-other">Wrong song?</button>`;
+  $('lyr-other').addEventListener('click', () => { void findLyrics(false); });
+  renderLyrics();
+}
+
+/** Search LRCLIB; with `auto`, take the top result if it's synced and the same length. */
+async function findLyrics(auto: boolean) {
+  const q = $<HTMLInputElement>('lyr-q').value.trim();
+  if (!q) { $('lyr-status').textContent = 'Type the song name and artist.'; return; }
+  lyricsSearched = true;
+  const status = $('lyr-status');
+  const list = $('lyr-results');
+  status.textContent = 'Searching…';
+  list.innerHTML = '';
+  const src = player?.source;
+  const duration = src ? src.length / src.sampleRate : 0;
+  try {
+    const results = await searchLyrics(q, duration);
+    const top = results[0];
+    if (auto && top?.synced.length && (!duration || Math.abs(top.duration - duration) <= 4)) { useLyrics(top); return; }
+    if (!results.some((r) => r.synced.length)) {
+      status.textContent = results.length ? 'Found only unsynced lyrics for that search. Try a different spelling.' : 'No lyrics found. Try a different spelling.';
+      return;
+    }
+    status.textContent = 'Pick the matching song:';
+    for (const r of results.filter((x) => x.synced.length)) {
+      const li = document.createElement('li');
+      const off = duration && r.duration ? Math.abs(r.duration - duration) : 0;
+      li.innerHTML = `<span class="meta"><b>${esc(r.title)}</b><br>${esc(r.artist)}${r.album ? ` · ${esc(r.album)}` : ''} · ${fmt(r.duration)}${off > 4 ? ' (different length)' : ''}</span><button class="primary">Use</button>`;
+      li.querySelector('button')!.addEventListener('click', () => useLyrics(r));
+      list.appendChild(li);
+    }
+  } catch (err) {
+    status.textContent = `Couldn't search lyrics: ${errText(err)}`;
+  }
+}
+$<HTMLFormElement>('lyr-form').addEventListener('submit', (e) => { e.preventDefault(); void findLyrics(false); });
+
+$('lrc-pick').addEventListener('click', () => $<HTMLInputElement>('lrc').click());
+$<HTMLInputElement>('lrc').addEventListener('change', async (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  (e.target as HTMLInputElement).value = '';
+  if (!f) return;
+  const lines = parseLrc(await f.text());
+  if (!lines.length) { $('lyr-status').textContent = 'No synced lines in that file.'; return; }
+  lyricLines = lines;
+  lyricsSearched = true;
+  $('lyr-results').innerHTML = '';
+  $('lyr-status').textContent = `${lines.length} synced lines from ${f.name}.`;
+  renderLyrics();
+});
+
+// ---- Share links --------------------------------------------------------------------
+
 $('share').addEventListener('click', async () => {
   const p = player;
   if (!p?.analysis) return;
@@ -391,7 +550,7 @@ $('share').addEventListener('click', async () => {
   const state: ShareState = {
     v: 1,
     h: p.fileHash.slice(0, 16),
-    n: trackName.slice(0, 80),
+    n: trackName().slice(0, 80),
     mode: s.mode,
     sr: p.source!.sampleRate,
     loop: s.mode === 'loop' && s.loop ? [s.loop.startSample, s.loop.endSample] : undefined,
@@ -404,15 +563,15 @@ $('share').addEventListener('click', async () => {
   out.value = url;
   show('share-out');
   out.select();
-  try { await navigator.clipboard.writeText(url); $('share').textContent = 'Link copied'; } catch { $('share').textContent = 'Copy the link'; }
-  setTimeout(() => ($('share').textContent = 'Share'), 2500);
+  try { await navigator.clipboard.writeText(url); $('share').textContent = 'Link copied'; } catch { $('share').textContent = 'Copy the link below'; }
+  setTimeout(() => ($('share').textContent = 'Copy share link'), 2500);
 });
 
 function applyShare() {
   const p = player, s = pendingShare;
   if (!p?.analysis || !s) return;
   if (s.h && p.fileHash && !p.fileHash.startsWith(s.h)) {
-    $('share-banner').textContent = 'This file does not match the shared link (different audio). Shared settings were not applied.';
+    $('share-banner').textContent = "This isn't the same audio file as the shared link, so its settings weren't applied.";
     return;
   }
   const v = (id: string) => $<HTMLInputElement>(id);
@@ -428,10 +587,9 @@ function applyShare() {
     const match = p.loops.find((l) => Math.abs(l.startSample - a) < tolerance && Math.abs(l.endSample - b) < tolerance);
     if (match) selectLoop(match);
   }
-  tab = s.mode;
   syncControls();
   const needsStems = !!(s.gains && Object.values(s.gains).some((g) => g !== 1)) || !!s.locks?.length;
-  $('share-banner').textContent = needsStems ? 'Shared settings applied. Separate stems to apply the shared mix too.' : 'Shared settings applied.';
+  $('share-banner').textContent = needsStems ? 'Shared settings applied. Split the stems (Stems tab) to hear the shared mix too.' : 'Shared settings applied.';
   if (!needsStems) pendingShare = null;
 }
 
@@ -453,18 +611,24 @@ function applyShareMix() {
   pendingShare = null;
 }
 
-// ---- Transport, sleep, media session ---------------------------------------------
+// ---- Transport, sleep, lock screen ------------------------------------------------------
+
+let shownPlaying: boolean | null = null;
 function updatePlayButton() {
-  const b = $('play');
   const on = !!player?.playing;
+  if (on === shownPlaying) return;
+  shownPlaying = on;
+  const b = $('play');
   b.textContent = on ? '❚❚' : '▶';
   b.setAttribute('aria-label', on ? 'Pause' : 'Play');
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = on ? 'playing' : 'paused';
 }
 
+/** Must be called straight from a tap/click so the browser lets audio start. */
 async function togglePlay() {
   if (!player?.source) return;
-  if (player.playing) player.pause(); else await player.play();
+  if (player.playing) player.pause();
+  else await player.play();
   updatePlayButton();
 }
 $('play').addEventListener('click', togglePlay);
@@ -472,7 +636,7 @@ document.addEventListener('keydown', (e) => {
   const t = e.target;
   if (e.code === 'Space' && !(t instanceof HTMLInputElement) && !(t instanceof HTMLButtonElement) && !(t instanceof HTMLSelectElement)) {
     e.preventDefault();
-    togglePlay();
+    void togglePlay();
   }
 });
 
@@ -481,8 +645,9 @@ $<HTMLSelectElement>('sleep').addEventListener('change', (e) => player?.setSleep
 function updateMediaSession() {
   if (!('mediaSession' in navigator)) return;
   navigator.mediaSession.metadata = new MediaMetadata({
-    title: trackName,
-    artist: 'stems · endless',
+    title: song.title || 'stems',
+    artist: song.artist || 'stems',
+    album: 'stems · endless',
     artwork: [{ src: new URL('./icon-512.png', location.href).href, sizes: '512x512', type: 'image/png' }],
   });
   navigator.mediaSession.setActionHandler('play', () => { void player?.play().then(updatePlayButton); });
@@ -490,27 +655,29 @@ function updateMediaSession() {
   navigator.mediaSession.setActionHandler('stop', () => { player?.pause(); updatePlayButton(); });
 }
 
-// ---- File input + drag and drop --------------------------------------------------
+// ---- File input + drag and drop -----------------------------------------------------------
+
 const fileInput = $<HTMLInputElement>('file');
 $('pick').addEventListener('click', () => fileInput.click());
 $('another').addEventListener('click', () => { player?.pause(); updatePlayButton(); fileInput.click(); });
-fileInput.addEventListener('change', () => { const f = fileInput.files?.[0]; if (f) load({ file: f }); fileInput.value = ''; });
+fileInput.addEventListener('change', () => { const f = fileInput.files?.[0]; if (f) void load({ file: f }); fileInput.value = ''; });
 $('demo').addEventListener('click', () => load({ demo: true }));
 const drop = $('drop');
 for (const ev of ['dragenter', 'dragover']) document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
 for (const ev of ['dragleave', 'drop']) document.addEventListener(ev, (e) => { e.preventDefault(); if (ev === 'drop' || e.target === drop) drop.classList.remove('over'); });
 document.addEventListener('drop', (e) => {
   const f = (e as DragEvent).dataTransfer?.files?.[0];
-  if (f) load({ file: f });
+  if (f) void load({ file: f });
 });
 
 $('clear-cache').addEventListener('click', async () => {
   await clearCache();
   try { await caches.delete('stems-models-v1'); } catch { /* ignore */ }
-  $('clear-cache').textContent = 'Cache cleared';
+  $('clear-cache').textContent = 'Cleared';
 });
 
-// ---- PWA ---------------------------------------------------------------------------
+// ---- PWA ----------------------------------------------------------------------------------
+
 let installPrompt: (Event & { prompt(): Promise<void> }) | null = null;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
@@ -526,20 +693,28 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
   navigator.serviceWorker.addEventListener('controllerchange', () => { void ensureIsolationState(() => !player?.source); });
 }
 
-// Multi-threaded mode toggle (cross-origin isolation). Needs the service worker in production builds.
+// Multi-threaded mode (cross-origin isolation). Needs the service worker in production builds.
 const mt = $<HTMLInputElement>('multithread');
 mt.checked = crossOriginIsolated;
 if (!import.meta.env.PROD && !crossOriginIsolated) {
   mt.disabled = true;
-  $('multithread-note').textContent = 'Dev server: start with STEMS_ISOLATE=1 to try multi-threaded mode.';
+  $('multithread-note').textContent = '(dev server: start with STEMS_ISOLATE=1)';
 }
 mt.addEventListener('change', () => { void setIsolation(mt.checked); });
 
-// ---- Render loop -------------------------------------------------------------------
-let lyricActiveIdx = -1;
+// Installed app: "Open with stems" for audio files.
+type LaunchParams = { files: { getFile(): Promise<File> }[] };
+const lq = (window as unknown as { launchQueue?: { setConsumer(cb: (p: LaunchParams) => void): void } }).launchQueue;
+lq?.setConsumer(async (params) => {
+  const h = params.files[0];
+  if (h) void load({ file: await h.getFile() });
+});
+
+// ---- Drawing --------------------------------------------------------------------------------
+
 function frame() {
   const p = player;
-  if (p?.source) {
+  if (p?.source && document.visibilityState === 'visible') {
     const pos = p.position();
     const heads = p.stems
       ? p.stems.names.map((n, i) => ({ n, i })).filter(({ i }) => p.locked[i]).map(({ n, i }) => ({ pos: p.stemPositions[i] ?? 0, label: n }))
@@ -554,10 +729,10 @@ function frame() {
       const idx = lineAt(lyricLines, pos / p.source.sampleRate);
       if (idx !== lyricActiveIdx) {
         lyricActiveIdx = idx;
-        document.querySelectorAll<HTMLDivElement>('#lyrics .line').forEach((el, i) => {
-          el.classList.toggle('active', i === idx);
-          if (i === idx) el.scrollIntoView({ block: 'nearest' });
-        });
+        const box = $('lyrics');
+        box.querySelectorAll<HTMLDivElement>('.line').forEach((el, i) => el.classList.toggle('active', i === idx));
+        const el = box.children[idx] as HTMLElement | undefined;
+        if (el && tab === 'lyrics') box.scrollTop = el.offsetTop - box.offsetTop - box.clientHeight / 2 + el.clientHeight / 2;
       }
     }
   }
@@ -567,360 +742,3 @@ requestAnimationFrame(frame);
 
 // Expose for automated testing / console tinkering.
 (window as unknown as { stems: unknown }).stems = { get player() { return player; } };
-
-// Installed-PWA "Open with stems" for audio files.
-type LaunchParams = { files: { getFile(): Promise<File> }[] };
-const lq = (window as unknown as { launchQueue?: { setConsumer(cb: (p: LaunchParams) => void): void } }).launchQueue;
-lq?.setConsumer(async (params) => {
-  const h = params.files[0];
-  if (h) load({ file: await h.getFile() });
-});
-
-// ---- Lyrics (.lrc) ----
-
-function renderLyrics() {
-  const box = $('lyrics');
-  box.innerHTML = '';
-  lyricActiveIdx = -1;
-  lyricLines.forEach((l) => {
-    const d = document.createElement('div');
-    d.className = 'line';
-    d.innerHTML = `<span class="t">${fmt(l.time)}</span><span>${escapeHtml(l.text)}</span>`;
-    d.addEventListener('click', () => player?.seek(Math.round(l.time * player!.source!.sampleRate)));
-    box.appendChild(d);
-  });
-  renderLoops();
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-}
-
-$('lrc-pick').addEventListener('click', () => $<HTMLInputElement>('lrc').click());
-$<HTMLInputElement>('lrc').addEventListener('change', async (e) => {
-  const f = (e.target as HTMLInputElement).files?.[0];
-  (e.target as HTMLInputElement).value = '';
-  if (!f) return;
-  const lines = parseLrc(await f.text());
-  if (!lines.length) {
-    $('lrc-name').textContent = 'No synced lines found in that file.';
-    return;
-  }
-  lyricLines = lines;
-  $('lrc-name').textContent = `${lines.length} synced lines loaded.`;
-  renderLyrics();
-});
-
-// ---- YouTube ----
-
-let yt: YouTubeSource | null = null;
-const ytKey = import.meta.env.VITE_YOUTUBE_API_KEY as string | undefined;
-if (ytKey) $('yt-search-row').classList.remove('hidden');
-
-async function ytPlayId(id: string) {
-  const status = $('yt-status');
-  status.textContent = 'Loading YouTube player…';
-  try {
-    yt ??= new YouTubeSource($('yt-player'));
-    yt.events = {
-      onReady: (d) => { status.textContent = `Ready · ${fmt(d)}`; },
-      onState: (s) => { status.textContent = s === 'playing' ? 'Playing' : s === 'paused' ? 'Paused' : s === 'ended' ? 'Ended' : 'Buffering…'; },
-      onError: (m) => { status.textContent = m; },
-    };
-    await yt.load(id);
-    yt.play();
-  } catch (err) {
-    status.textContent = `Couldn't load that video: ${err instanceof Error ? err.message : String(err)}`;
-  }
-}
-
-$('yt-load').addEventListener('click', () => {
-  const id = parseYouTubeId($<HTMLInputElement>('yt-url').value);
-  if (!id) { $('yt-status').textContent = 'That doesn\u2019t look like a YouTube link or video ID.'; return; }
-  ytPlayId(id);
-});
-$('yt-search').addEventListener('click', async () => {
-  const q = $<HTMLInputElement>('yt-q').value.trim();
-  if (!q) return;
-  const status = $('yt-status');
-  status.textContent = 'Searching…';
-  try {
-    const results = await searchYouTube(q, ytKey);
-    status.textContent = results.length ? '' : 'No music videos found.';
-    for (const r of results.slice(0, 5)) {
-      const d = document.createElement('div');
-      d.className = 'mini-result';
-      d.innerHTML = `<b>${escapeHtml(r.title)}</b><br><span>${escapeHtml(r.channel)}</span>`;
-      d.addEventListener('click', () => ytPlayId(r.videoId));
-      status.appendChild(d);
-    }
-  } catch (err) {
-    status.textContent = err instanceof Error ? err.message : String(err);
-  }
-});
-
-// ---- Spotify ----
-
-const spPlayer = new SpotifyWebPlayer();
-const spAudio = new Audio();
-spAudio.preload = 'none';
-
-// Spotify-native looping. Spotify controls the encrypted stream, so this is
-// playback control only: native repeat for the whole track, or a seek back to
-// the A point for a section. It is not the local sample-accurate loop engine.
-let spCurrentTrack: SpotifyTrack | null = null;
-let spSnapshot: SpotifyPlaybackSnapshot | null = null;
-let spSectionStartMs = 0;
-let spSectionEndMs: number | null = null;
-let spSectionTimer: number | null = null;
-let spSectionSeeking = false;
-
-const spMs = (ms: number | null | undefined) => (ms == null ? '—' : fmt(ms / 1000));
-
-function spSection(): SpotifySection | null {
-  if (!spCurrentTrack) return null;
-  return normalizeSpotifySection(spSectionStartMs, spSectionEndMs ?? spCurrentTrack.durationMs, spCurrentTrack.durationMs);
-}
-
-function spRenderLoop() {
-  $('sp-loop-start-v').textContent = `Start ${spMs(spSectionStartMs)}`;
-  $('sp-loop-end-v').textContent = `End ${spMs(spSectionEndMs ?? spCurrentTrack?.durationMs)}`;
-}
-
-function spStopSectionLoop() {
-  if (spSectionTimer !== null) {
-    clearInterval(spSectionTimer);
-    spSectionTimer = null;
-  }
-}
-
-async function spCheckSectionLoop() {
-  if (!spCurrentTrack || spSectionSeeking) return;
-  const section = spSection();
-  if (!section) {
-    spStopSectionLoop();
-    $<HTMLInputElement>('sp-loop-section').checked = false;
-    $('sp-loop-status').textContent = 'That section is too short — set start and end at least 1 second apart.';
-    return;
-  }
-  try {
-    spSnapshot = (await spPlayer.getSnapshot()) ?? spSnapshot;
-  } catch { /* keep the last event snapshot */ }
-  if (!spSnapshot) return;
-  if (spSnapshot.trackId && spSnapshot.trackId !== spCurrentTrack.id) {
-    spStopSectionLoop();
-    $<HTMLInputElement>('sp-loop-section').checked = false;
-    $('sp-loop-status').textContent = 'Section loop stopped because the Spotify track changed.';
-    return;
-  }
-  if (spSnapshot.paused || !spotifySectionDue(spSnapshot.positionMs, section)) return;
-  spSectionSeeking = true;
-  try {
-    await spPlayer.seek(section.startMs);
-    $('sp-loop-status').textContent = `Looping section ${spMs(section.startMs)} → ${spMs(section.endMs)}.`;
-  } catch (err) {
-    spStopSectionLoop();
-    $<HTMLInputElement>('sp-loop-section').checked = false;
-    $('sp-loop-status').textContent = err instanceof Error ? err.message : String(err);
-  } finally {
-    spSectionSeeking = false;
-  }
-}
-
-function spStartSectionLoop() {
-  spStopSectionLoop();
-  spSectionTimer = window.setInterval(() => { void spCheckSectionLoop(); }, 100);
-  void spCheckSectionLoop();
-}
-
-async function spRefreshAuth() {
-  const logged = !!(await spotifyToken().catch(() => null));
-  $('sp-connect').classList.toggle('hidden', logged);
-  $('sp-disconnect').classList.toggle('hidden', !logged);
-  $('sp-search-row').classList.toggle('hidden', !logged);
-  $('sp-player-row').classList.toggle('hidden', !logged);
-  $('sp-loop').classList.toggle('hidden', !logged);
-  if (!logged && !spotifyConfigured()) {
-    $('sp-now').textContent = 'Set VITE_SPOTIFY_CLIENT_ID in .env to connect Spotify.';
-  } else if (!logged) {
-    $('sp-now').textContent = '';
-  }
-}
-
-spPlayer.events = {
-  onReady: () => { $('sp-status').textContent = 'In-app playback ready.'; },
-  onState: (playing, name) => { $('sp-now').textContent = playing ? `▶ ${name}` : name ? `❚❚ ${name}` : ''; },
-  onSnapshot: (snapshot) => { spSnapshot = snapshot; },
-  onError: (m) => { $('sp-status').textContent = m; },
-};
-
-$('sp-connect').addEventListener('click', () => spotifyLogin().catch((e) => { $('sp-now').textContent = e.message; }));
-$('sp-disconnect').addEventListener('click', () => {
-  spStopSectionLoop();
-  spCurrentTrack = null;
-  spSnapshot = null;
-  spPlayer.disconnect();
-  spAudio.pause();
-  spotifyLogout();
-  $('sp-results').innerHTML = '';
-  spRefreshAuth();
-});
-$('sp-device').addEventListener('click', async () => {
-  spPlayer.activate();
-  $('sp-status').textContent = 'Starting player…';
-  try { await spPlayer.ensureReady(); }
-  catch (err) { $('sp-status').textContent = err instanceof Error ? err.message : String(err); }
-});
-
-$('sp-loop-track').addEventListener('change', async () => {
-  const input = $<HTMLInputElement>('sp-loop-track');
-  if (input.checked) {
-    $<HTMLInputElement>('sp-loop-section').checked = false;
-    spStopSectionLoop();
-  }
-  if (!spCurrentTrack) {
-    $('sp-loop-status').textContent = input.checked
-      ? 'Track repeat is armed — it will apply when you play a Spotify track.'
-      : 'Play a Spotify track, then set loop points from the playing position.';
-    return;
-  }
-  try {
-    await spPlayer.setRepeatMode(input.checked ? 'track' : 'off');
-    $('sp-loop-status').textContent = input.checked
-      ? `Looping ${spCurrentTrack.name} forever with Spotify track repeat.`
-      : 'Spotify track repeat is off.';
-  } catch (err) {
-    $('sp-loop-status').textContent = err instanceof Error ? err.message : String(err);
-  }
-});
-
-$('sp-loop-start').addEventListener('click', async () => {
-  try { spSnapshot = (await spPlayer.getSnapshot()) ?? spSnapshot; } catch { /* use last snapshot */ }
-  if (!spCurrentTrack || !spSnapshot) {
-    $('sp-loop-status').textContent = 'Play a Spotify track before setting the loop start.';
-    return;
-  }
-  spSectionStartMs = Math.floor(spSnapshot.positionMs);
-  spRenderLoop();
-  $('sp-loop-status').textContent = `Loop start set at ${spMs(spSectionStartMs)}.`;
-});
-
-$('sp-loop-end').addEventListener('click', async () => {
-  try { spSnapshot = (await spPlayer.getSnapshot()) ?? spSnapshot; } catch { /* use last snapshot */ }
-  if (!spCurrentTrack || !spSnapshot) {
-    $('sp-loop-status').textContent = 'Play a Spotify track before setting the loop end.';
-    return;
-  }
-  spSectionEndMs = Math.floor(spSnapshot.positionMs);
-  spRenderLoop();
-  $('sp-loop-status').textContent = `Loop end set at ${spMs(spSectionEndMs)}.`;
-});
-
-$('sp-loop-section').addEventListener('change', async () => {
-  const input = $<HTMLInputElement>('sp-loop-section');
-  if (!input.checked) {
-    spStopSectionLoop();
-    $('sp-loop-status').textContent = 'Section loop is off.';
-    return;
-  }
-  const section = spSection();
-  if (!spCurrentTrack || !section) {
-    input.checked = false;
-    $('sp-loop-status').textContent = !spCurrentTrack
-      ? 'Play a Spotify track before enabling a section loop.'
-      : 'Set start and end at least 1 second apart first.';
-    return;
-  }
-  $<HTMLInputElement>('sp-loop-track').checked = false;
-  try {
-    await spPlayer.setRepeatMode('off');
-  } catch { /* section seeking below is independent of Spotify repeat */ }
-  spRenderLoop();
-  spStartSectionLoop();
-  $('sp-loop-status').textContent = `Looping section ${spMs(section.startMs)} → ${spMs(section.endMs)}.`;
-});
-
-$('sp-load-file').addEventListener('click', () => {
-  $('sp-loop-status').textContent = 'Choose the same song as an audio file — it will be decoded and opened with seamless loops, stems and lyrics.';
-  fileInput.click();
-});
-
-// Cross-origin isolation (multi-threaded mode) blocks the embedded YouTube and
-// Spotify players, so say so where they live and offer the switch.
-if (crossOriginIsolated) {
-  const note = document.createElement('p');
-  note.className = 'notice-inline';
-  note.innerHTML = 'Multi-threaded mode is on, which blocks the embedded YouTube and Spotify players. <button type="button">Turn it off</button>';
-  note.querySelector('button')!.addEventListener('click', () => { void setIsolation(false); });
-  $('sources').querySelector('.hint')!.after(note);
-}
-$('sp-search').addEventListener('click', async () => {
-  const q = $<HTMLInputElement>('sp-q').value.trim();
-  if (!q) return;
-  const ol = $('sp-results');
-  ol.innerHTML = '';
-  try {
-    const tracks = await searchSpotifyTracks(q);
-    if (!tracks.length) { $('sp-now').textContent = 'No tracks found.'; return; }
-    for (const t of tracks) playSpotifyResult(t, ol);
-  } catch (err) {
-    $('sp-now').textContent = err instanceof Error ? err.message : String(err);
-  }
-});
-
-function playSpotifyResult(t: SpotifyTrack, ol: HTMLElement) {
-  const li = document.createElement('li');
-  li.innerHTML = `
-    <span class="q">${t.image ? `<img src="${t.image}" alt="" width="40" height="40" />` : ''}</span>
-    <span class="meta"><b>${escapeHtml(t.name)}</b><br>${escapeHtml(t.artists)} · ${escapeHtml(t.album)}</span>
-    <span class="acts">
-      <button data-act="play" class="primary">Play</button>
-      ${t.previewUrl ? '<button data-act="preview">Preview</button>' : ''}
-      <button data-act="open">Open in Spotify</button>
-    </span>`;
-  li.querySelector<HTMLButtonElement>('[data-act=play]')!.onclick = async () => {
-    spPlayer.activate(); // must run inside the click, before any await
-    $('sp-status').textContent = 'Starting playback…';
-    spStopSectionLoop();
-    $<HTMLInputElement>('sp-loop-section').checked = false;
-    spCurrentTrack = t;
-    spSnapshot = null;
-    spSectionStartMs = 0;
-    spSectionEndMs = t.durationMs;
-    spRenderLoop();
-    try {
-      spAudio.pause();
-      await spPlayer.playUri(t.uri);
-      $('sp-status').textContent = '';
-      $('sp-now').textContent = `▶ ${t.name} — ${t.artists}`;
-      if ($<HTMLInputElement>('sp-loop-track').checked) {
-        try {
-          await spPlayer.setRepeatMode('track');
-          $('sp-loop-status').textContent = `Looping ${t.name} forever with Spotify track repeat.`;
-        } catch (err) {
-          $('sp-loop-status').textContent = `Playback started, but Spotify repeat could not be enabled: ${err instanceof Error ? err.message : String(err)}`;
-        }
-      } else {
-        $('sp-loop-status').textContent = 'Set loop points from the playing position, or enable track repeat.';
-      }
-    } catch (err) {
-      $('sp-status').textContent = err instanceof Error ? err.message : String(err);
-    }
-  };
-  // Spotify no longer returns preview URLs for most tracks; the button only exists when it does.
-  const previewBtn = li.querySelector<HTMLButtonElement>('[data-act=preview]');
-  if (previewBtn) previewBtn.onclick = () => {
-    spAudio.src = t.previewUrl!;
-    spAudio.play().catch((e) => { $('sp-status').textContent = `Preview failed: ${e instanceof Error ? e.message : String(e)}`; });
-    $('sp-now').textContent = `♪ Preview · ${t.name} — ${t.artists}`;
-  };
-  li.querySelector<HTMLButtonElement>('[data-act=open]')!.onclick = () =>
-    window.open(`https://open.spotify.com/track/${t.id}`, '_blank', 'noopener');
-  ol.appendChild(li);
-}
-
-// OAuth callback: ?code= lands on this page; exchange it, then clean the URL.
-handleSpotifyCallback()
-  .then((done) => { if (done) $('sp-now').textContent = 'Spotify connected.'; })
-  .catch((err) => { $('sp-now').textContent = err instanceof Error ? err.message : String(err); })
-  .finally(() => spRefreshAuth());

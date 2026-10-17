@@ -3,8 +3,8 @@
  *
  * It unlocks SharedArrayBuffer (zero-copy audio between page, worklet and
  * workers) and multi-threaded WASM for HTDemucs on CPU, but it also blocks
- * third-party embeds that don't opt in: the YouTube player, Spotify's Web
- * Playback SDK, remote <audio> previews. So it is off by default.
+ * third-party content that doesn't opt in, and on static hosts it needs a
+ * service-worker reload. So it is off by default.
  *
  * Static hosts (GitHub Pages) can't send the headers, so the service worker
  * adds them, but only while this marker exists in Cache Storage. The service

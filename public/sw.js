@@ -7,7 +7,7 @@
 //    can't set headers (GitHub Pages): while the page has stored the marker
 //    below, same-origin responses get COOP/COEP/CORP headers, unlocking
 //    SharedArrayBuffer and multi-threaded WASM. It's opt-in because it blocks
-//    third-party players (YouTube, Spotify). See src/ui/isolation.ts.
+//    third-party content that doesn't opt in. See src/ui/isolation.ts.
 const CACHE = 'stems-shell-v3';
 const SCOPE = new URL(self.registration.scope);
 const COI_CACHE = 'stems-coi';

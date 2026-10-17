@@ -7,14 +7,19 @@ import { bakeLoop, planToLength, renderJumps, type RenderSources } from '../engi
 import { vocalBoundaryPenalty, type Stems } from '../engine/separate';
 import type { Jump } from '../engine/splicer';
 import type { FromAnalysis } from './analysis.worker';
+import { BackgroundOutput } from './background';
 import * as cache from './cache';
 import { isBackendInitError } from './ort-fallback';
 import type { FromSeparation, ToSeparation } from './separation.worker';
 import type { FromWorklet, ToWorklet } from './worklet';
 import workletUrl from './worklet.ts?worker&url';
 
-/** How many jumps to keep queued in the worklet ahead of the playhead. */
-const QUEUE_AHEAD = 3;
+/**
+ * How many jumps to keep queued in the worklet ahead of the playhead. Generous,
+ * so playback never waits on the main thread (which browsers slow down in
+ * background tabs).
+ */
+const QUEUE_AHEAD = 6;
 
 export const DEFAULT_MODEL_URL = 'https://huggingface.co/timcsy/demucs-web-onnx/resolve/main/htdemucs_embedded.onnx';
 
@@ -49,6 +54,7 @@ export class Player {
   readonly ctx: AudioContext;
   private node!: AudioWorkletNode;
   private master!: GainNode;
+  private out!: BackgroundOutput;
   source: AudioSource | null = null;
   analysis: Analysis | null = null;
   planner: Planner | null = null;
@@ -87,7 +93,8 @@ export class Player {
     await ctx.audioWorklet.addModule(workletUrl);
     p.node = new AudioWorkletNode(ctx, 'stems-splicer', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
     p.master = ctx.createGain();
-    p.node.connect(p.master).connect(ctx.destination);
+    p.node.connect(p.master);
+    p.out = new BackgroundOutput(ctx, p.master);
     p.node.port.onmessage = (e: MessageEvent<FromWorklet>) => p.onWorklet(e.data);
     return p;
   }
@@ -234,9 +241,10 @@ export class Player {
     this.replan();
   }
 
+  /** Start playback. Call straight from a click/tap (see BackgroundOutput.start). */
   async play() {
     if (!this.source) return;
-    if (this.ctx.state !== 'running') await this.ctx.resume();
+    const started = this.out.start();
     if (!this.sleepAt) {
       this.master.gain.cancelScheduledValues(this.ctx.currentTime);
       this.master.gain.setValueAtTime(1, this.ctx.currentTime);
@@ -248,9 +256,13 @@ export class Player {
     this.playing = true;
     this.lastPosTime = this.ctx.currentTime;
     this.send({ type: 'play' });
+    await started;
   }
 
-  pause() { this.send({ type: 'pause' }); }
+  pause() {
+    this.send({ type: 'pause' });
+    this.out.stop();
+  }
 
   stop() {
     this.pause();
@@ -280,6 +292,9 @@ export class Player {
   }
 
   get queue(): readonly Jump[] { return this.queued; }
+
+  /** Whether output runs through a media element, so it keeps playing in the background. */
+  get backgroundCapable(): boolean { return this.out.viaMediaElement; }
 
   // ---- Stems ----------------------------------------------------------------
 
@@ -379,21 +394,21 @@ export class Player {
     this.master.gain.setValueAtTime(1, this.ctx.currentTime);
     if (minutes <= 0) return;
     const fade = Math.min(20, minutes * 30);
-    const ms = minutes * 60_000;
-    this.sleepAt = Date.now() + ms;
+    const sec = minutes * 60;
+    this.sleepAt = Date.now() + sec * 1000;
+    // The fade is scheduled on the audio clock now, so it happens on time even
+    // when the page is in the background and timers run late.
+    const t = this.ctx.currentTime;
+    this.master.gain.setValueAtTime(1, t + sec - fade);
+    this.master.gain.linearRampToValueAtTime(0.0001, t + sec);
     this.sleepTimer = setTimeout(() => {
-      const t = this.ctx.currentTime;
-      this.master.gain.setValueAtTime(1, t);
-      this.master.gain.linearRampToValueAtTime(0.0001, t + fade);
-      this.sleepTimer = setTimeout(() => {
-        this.pause();
-        this.sleepAt = 0;
-        this.sleepTimer = null;
-        this.master.gain.cancelScheduledValues(this.ctx.currentTime);
-        this.master.gain.setValueAtTime(1, this.ctx.currentTime + 0.05);
-        this.events.onSleep?.();
-      }, fade * 1000);
-    }, Math.max(0, ms - fade * 1000));
+      this.pause();
+      this.sleepAt = 0;
+      this.sleepTimer = null;
+      this.master.gain.cancelScheduledValues(this.ctx.currentTime);
+      this.master.gain.setValueAtTime(1, this.ctx.currentTime + 0.2);
+      this.events.onSleep?.();
+    }, sec * 1000);
   }
 
   // ---- Export -------------------------------------------------------------------
