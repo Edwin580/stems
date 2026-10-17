@@ -41,6 +41,7 @@ function setProgress(stage: string, f: number) {
 }
 
 function setStemProgress(stage: string, f: number) {
+  if (/segment/i.test(stage)) $('sep-note').textContent = 'Keep this page open. It keeps playing while it works.';
   $('sstage').textContent = stage;
   $('spct').textContent = `${Math.round(f * 100)}%`;
   $('sbar-fill').style.width = `${Math.round(f * 100)}%`;
