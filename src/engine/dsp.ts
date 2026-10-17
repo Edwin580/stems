@@ -1,4 +1,4 @@
-import { FFT } from './fft';
+import { createFFT } from './wasm-fft';
 
 /** Average all channels into one mono signal. */
 export function mixdown(channels: Float32Array[]): Float32Array {
@@ -62,7 +62,7 @@ export interface Spectrogram {
  * sample f * hop, which keeps beat times unbiased.
  */
 export function stft(x: Float32Array, sampleRate: number, fftSize = 2048, hop = 512): Spectrogram {
-  const fft = new FFT(fftSize);
+  const fft = createFFT(fftSize);
   const bins = fftSize / 2 + 1;
   const frames = Math.max(1, Math.floor(x.length / hop) + 1);
   const mag = new Float32Array(frames * bins);
@@ -177,13 +177,13 @@ export function dctRows(x: Float32Array, rows: number, cols: number, nOut: numbe
  * 12-bin chroma per frame from the energy spectrum (55 Hz – 2.5 kHz).
  * Linear energy keeps tonal peaks dominant over broadband drum noise.
  */
-export function chroma(spec: Spectrogram): Float32Array {
+export function chroma(spec: Spectrogram, fMin = 55, fMax = 2500): Float32Array {
   const out = new Float32Array(spec.frames * 12);
   const binHz = spec.sampleRate / spec.fftSize;
   const pcs: { bin: number; pc: number; w: number }[] = [];
   for (let b = 1; b < spec.bins; b++) {
     const f = b * binHz;
-    if (f < 55 || f > 2500) continue;
+    if (f < fMin || f > fMax) continue;
     const midi = 12 * Math.log2(f / 440) + 69;
     const nearest = Math.round(midi);
     const dist = Math.abs(midi - nearest); // 0..0.5
@@ -205,6 +205,45 @@ export function frameLoudnessDb(spec: Spectrogram): Float32Array {
     const base = f * spec.bins;
     for (let b = 0; b < spec.bins; b++) acc += spec.mag[base + b] ** 2;
     out[f] = 10 * Math.log10(acc / spec.bins + 1e-10);
+  }
+  return out;
+}
+
+/**
+ * Band-limited resampling by an arbitrary ratio (windowed sinc, 16 zero
+ * crossings per side, cutoff at the lower Nyquist). Used to feed 44.1 kHz
+ * models from 48 kHz audio and back.
+ */
+export function resample(x: Float32Array, from: number, to: number): Float32Array {
+  if (from === to) return x.slice();
+  const ratio = to / from;
+  const outLen = Math.round(x.length * ratio);
+  const out = new Float32Array(outLen);
+  const cutoff = Math.min(1, ratio) * 0.97;
+  const zc = 16;
+  const halfW = zc / cutoff;
+  // Kernel sampled at RES points per input sample, linearly interpolated.
+  const RES = 256;
+  const tl = Math.ceil(halfW * RES) + 2;
+  const table = new Float32Array(tl);
+  for (let k = 0; k < tl; k++) {
+    const t = k / RES;
+    const a = Math.PI * t * cutoff;
+    const sinc = t === 0 ? 1 : Math.sin(a) / a;
+    table[k] = t >= halfW ? 0 : sinc * (0.5 + 0.5 * Math.cos((Math.PI * t) / halfW));
+  }
+  for (let o = 0; o < outLen; o++) {
+    const c = o / ratio;
+    const i0 = Math.ceil(c - halfW), i1 = Math.floor(c + halfW);
+    let acc = 0, wsum = 0;
+    for (let i = i0; i <= i1; i++) {
+      const p = Math.abs(i - c) * RES;
+      const k = p | 0;
+      const h = table[k] + (table[k + 1] - table[k]) * (p - k);
+      wsum += h;
+      if (i >= 0 && i < x.length) acc += x[i] * h;
+    }
+    out[o] = acc / wsum;
   }
   return out;
 }

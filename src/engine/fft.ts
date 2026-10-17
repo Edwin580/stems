@@ -1,21 +1,28 @@
 /**
- * Iterative radix-2 complex FFT with precomputed twiddles and bit-reversal
- * table. One instance per transform size; reuse it across frames.
+ * Iterative complex FFT: bit-reversal permutation, a fused radix-4 first
+ * pass (stages 1+2, no multiplies), then radix-2 butterflies with twiddles
+ * laid out contiguously per stage for cache-friendly access. One instance
+ * per transform size; reuse it across frames.
+ *
+ * A WebAssembly SIMD implementation (see wasm-fft.ts) is used for STFTs when
+ * available; this class is the portable reference and fallback.
  */
 export class FFT {
   readonly size: number;
-  private readonly cos: Float64Array;
-  private readonly sin: Float64Array;
+  /** Twiddles for stage with half-size h live at [h-1 .. 2h-2] (h = 4, 8, ...), cos and sin interleaved. */
+  private readonly tw: Float64Array;
   private readonly rev: Uint32Array;
 
   constructor(size: number) {
-    if (size < 2 || (size & (size - 1)) !== 0) throw new Error(`FFT size must be a power of two, got ${size}`);
+    if (size < 4 || (size & (size - 1)) !== 0) throw new Error(`FFT size must be a power of two >= 4, got ${size}`);
     this.size = size;
-    this.cos = new Float64Array(size / 2);
-    this.sin = new Float64Array(size / 2);
-    for (let i = 0; i < size / 2; i++) {
-      this.cos[i] = Math.cos((-2 * Math.PI * i) / size);
-      this.sin[i] = Math.sin((-2 * Math.PI * i) / size);
+    this.tw = new Float64Array(2 * size);
+    for (let h = 4; h < size; h <<= 1) {
+      for (let k = 0; k < h; k++) {
+        const a = (-Math.PI * k) / h;
+        this.tw[2 * (h + k)] = Math.cos(a);
+        this.tw[2 * (h + k) + 1] = Math.sin(a);
+      }
     }
     this.rev = new Uint32Array(size);
     const bits = Math.log2(size);
@@ -37,13 +44,26 @@ export class FFT {
         t = im[i]; im[i] = im[j]; im[j] = t;
       }
     }
-    for (let len = 2; len <= n; len <<= 1) {
-      const half = len >> 1;
-      const step = n / len;
+    // Stages 1 and 2 fused (radix-4 with trivial twiddles 1, -i).
+    for (let i = 0; i < n; i += 4) {
+      const ar = re[i], ai = im[i], br = re[i + 1], bi = im[i + 1];
+      const cr = re[i + 2], ci = im[i + 2], dr = re[i + 3], di = im[i + 3];
+      const s0r = ar + br, s0i = ai + bi, s1r = ar - br, s1i = ai - bi;
+      const s2r = cr + dr, s2i = ci + di, s3r = cr - dr, s3i = ci - di;
+      re[i] = s0r + s2r; im[i] = s0i + s2i;
+      re[i + 2] = s0r - s2r; im[i + 2] = s0i - s2i;
+      // s3 * (-i) = (s3i, -s3r)
+      re[i + 1] = s1r + s3i; im[i + 1] = s1i - s3r;
+      re[i + 3] = s1r - s3i; im[i + 3] = s1i + s3r;
+    }
+    const tw = this.tw;
+    for (let half = 4; half < n; half <<= 1) {
+      const len = half << 1;
+      const base = 2 * half;
       for (let i = 0; i < n; i += len) {
         for (let k = 0; k < half; k++) {
-          const wr = this.cos[k * step];
-          const wi = this.sin[k * step];
+          const wr = tw[base + 2 * k];
+          const wi = tw[base + 2 * k + 1];
           const a = i + k;
           const b = a + half;
           const xr = re[b] * wr - im[b] * wi;

@@ -87,8 +87,65 @@ export function estimateTempo(env: Float32Array, frameRate: number, prior = 120)
  * Ellis DP beat tracker. Returns beat positions in (fractional) onset frames.
  * `tightness` controls how strongly inter-beat intervals stick to the period.
  */
-export function trackBeats(env: Float32Array, period: number, tightness = 100): number[] {
+/**
+ * Local beat period per onset frame, for music whose tempo drifts (live
+ * playing, rubato, DJ-mixed edits). Windowed autocorrelation restricted to
+ * ±20% of the global period, median-smoothed, then interpolated per frame.
+ * For steady tracks this collapses to (almost exactly) the global period.
+ */
+export function localPeriods(env: Float32Array, globalPeriod: number, frameRate: number, windowSec = 8, hopSec = 1): Float64Array {
   const n = env.length;
+  const out = new Float64Array(n).fill(globalPeriod);
+  const win = Math.round(windowSec * frameRate);
+  const hop = Math.max(1, Math.round(hopSec * frameRate));
+  if (n < win * 1.5) return out;
+  const lo = Math.max(2, Math.floor(globalPeriod * 0.8)), hi = Math.ceil(globalPeriod * 1.25);
+  const centers: number[] = [];
+  const est: number[] = [];
+  for (let c = Math.floor(win / 2); c + win / 2 <= n; c += hop) {
+    const s = c - Math.floor(win / 2);
+    const ac = new Float64Array(hi + 2);
+    for (let lag = lo - 1; lag <= hi + 1; lag++) {
+      let acc = 0;
+      for (let i = s + lag; i < s + win; i++) acc += env[i] * env[i - lag];
+      ac[lag] = acc;
+    }
+    let best = -Infinity, arg = Math.round(globalPeriod);
+    for (let lag = lo; lag <= hi; lag++) {
+      // Mild pull toward the global period resolves near-ties.
+      const w = Math.exp(-0.5 * (Math.log(lag / globalPeriod) / 0.15) ** 2);
+      const v = ac[lag] * (0.7 + 0.3 * w);
+      if (v > best) { best = v; arg = lag; }
+    }
+    const y0 = ac[arg - 1], y1 = ac[arg], y2 = ac[arg + 1];
+    const den = y0 - 2 * y1 + y2;
+    const d = den < 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (y0 - y2)) / den)) : 0;
+    centers.push(c);
+    est.push(arg + d);
+  }
+  if (est.length < 3) return out;
+  // Median smoothing over 5 windows.
+  const sm = est.map((_, i) => {
+    const w = est.slice(Math.max(0, i - 2), Math.min(est.length, i + 3)).sort((a, b) => a - b);
+    return w[Math.floor(w.length / 2)];
+  });
+  let k = 0;
+  for (let t = 0; t < n; t++) {
+    while (k + 1 < centers.length && centers[k + 1] <= t) k++;
+    if (t <= centers[0]) out[t] = sm[0];
+    else if (k + 1 >= centers.length) out[t] = sm[sm.length - 1];
+    else {
+      const f = (t - centers[k]) / (centers[k + 1] - centers[k]);
+      out[t] = sm[k] * (1 - f) + sm[k + 1] * f;
+    }
+  }
+  return out;
+}
+
+export function trackBeats(env: Float32Array, periodIn: number | Float64Array, tightness = 100): number[] {
+  const n = env.length;
+  const periods = typeof periodIn === 'number' ? null : periodIn;
+  const period = typeof periodIn === 'number' ? periodIn : median(Array.from(periodIn));
   if (n < period * 4) return [];
   // Smooth the onset envelope with a Gaussian of width ~ period/32.
   const sigma = Math.max(1, period / 32);
@@ -106,12 +163,13 @@ export function trackBeats(env: Float32Array, period: number, tightness = 100): 
   }
   const score = new Float64Array(n);
   const back = new Int32Array(n).fill(-1);
-  const lo = Math.round(period / 2), hi = Math.round(period * 2);
   for (let t = 0; t < n; t++) {
+    const p = periods ? periods[t] : period;
+    const lo = Math.round(p / 2), hi = Math.round(p * 2);
     let best = -Infinity, arg = -1;
     for (let tau = t - hi; tau <= t - lo; tau++) {
       if (tau < 0) continue;
-      const pen = Math.log((t - tau) / period);
+      const pen = Math.log((t - tau) / p);
       const s = score[tau] - tightness * pen * pen;
       if (s > best) { best = s; arg = tau; }
     }
@@ -130,6 +188,11 @@ export function trackBeats(env: Float32Array, period: number, tightness = 100): 
   }
   beats.reverse();
   return trimWeakEdges(beats, local);
+}
+
+function median(v: number[]): number {
+  const s = [...v].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)] ?? 0;
 }
 
 /** Drop leading/trailing beats that sit in near-silence (fade in/out). */

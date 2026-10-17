@@ -90,3 +90,25 @@ button.round { width: 52px; height: 52px; border-radius: 50%; font-size: 20px; p
 .loops .meta b { color: var(--text); font-weight: 600; }
 .loops .acts { display: flex; gap: 6px; }
 .loops button { padding: 6px 10px; font-size: 13px; }
+.notice { border-color: var(--accent); }
+.aprog { margin: 4px 0 12px; }
+.spacer { flex: 1; }
+.sleep { display: flex; align-items: center; gap: 8px; }
+.sleep .k { color: var(--sub); font-size: 12px; }
+select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
+.sub { color: var(--sub); font-size: 13px; }
+.share-out { margin-top: 12px; display: grid; gap: 4px; }
+.share-out input { width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.share-out small { color: var(--sub); }
+.checks { display: grid; gap: 2px; }
+.export small { color: var(--sub); flex-basis: 100%; }
+.row.left { justify-content: flex-start; margin: 12px 0 6px; }
+.mixer { margin-top: 12px; }
+.stem { display: grid; grid-template-columns: 70px 1fr auto auto auto; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.stem .name { font-weight: 600; text-transform: capitalize; }
+.stem input[type=range] { width: 100%; accent-color: var(--accent); }
+.stem button { padding: 6px 10px; min-width: 38px; }
+.stem button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.adv { margin-top: 14px; color: var(--sub); }
+.adv input { width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.foot-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }

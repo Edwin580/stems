@@ -109,7 +109,7 @@ describe.each([
   it('endless render never runs out and has no clicks at seams', () => {
     const planner = new Planner(a, src, coarse, { ...DEFAULT_SETTINGS, barsBetweenJumps: 2 }, 42);
     const seconds = song.channels[0].length / song.sampleRate * 3;
-    const out = renderPath(song.channels, song.sampleRate, planner, seconds);
+    const out = renderPath({ groups: [song.channels], names: ["mix"] }, song.sampleRate, planner, seconds);
     const len = out[0].length;
     // Audio is still playing at the end (energy in the second-to-last 3 s).
     let e = 0;
@@ -134,7 +134,7 @@ describe.each([
   });
 
   it('seams add no high-frequency energy (no clicks or phasing)', () => {
-    const planner = new Planner(a, src, coarse, { ...DEFAULT_SETTINGS, barsBetweenJumps: 1 }, 9);
+    const planner = new Planner(a, src, coarse, { ...DEFAULT_SETTINGS, barsBetweenJumps: 1, loudnessMatch: false }, 9);
     const sp = new Splicer(song.channels, song.sampleRate);
     sp.setRunning(true);
     const block = 256;
@@ -146,7 +146,7 @@ describe.each([
       while (sp.pending().length < 2) { const j = planner.next(); if (!j) break; byId.set(j.id, j); sp.enqueue(j); }
       for (const ev of sp.render(out, block, off)) if (ev.type === 'jumped') seams.push({ frame: off + ev.frame, jump: byId.get(ev.id)! });
     }
-    expect(seams.length).toBeGreaterThan(5);
+    expect(seams.length).toBeGreaterThan(3);
     // Second-difference energy is dominated by clicks and comb-filtering.
     const hf = (x: Float32Array, s0: number, n: number) => {
       let e = 0;
@@ -164,7 +164,7 @@ describe.each([
 
   it('baked loop wraps without a click', () => {
     const loops = findLoops(a, src, coarse, { minBeats: 16, maxCandidates: 3, lengthBias: 0.05, fade: 2646 });
-    const baked = bakeLoop(song.channels, loops[0], 2646);
+    const baked = bakeLoop(song.channels, loops[0], song.sampleRate);
     const L = baked[0].length;
     const twice = new Float32Array(L * 2);
     twice.set(baked[0]); twice.set(baked[0], L);

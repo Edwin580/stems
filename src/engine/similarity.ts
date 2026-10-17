@@ -54,6 +54,21 @@ export const DEFAULT_TRANSITION_OPTIONS: TransitionOptions = {
   barPenalty: 0.6,
 };
 
+export interface TransitionExtras {
+  /**
+   * Per-beat phrase-start score in [0, 1]. Jumping from a phrase boundary
+   * into the middle of a phrase (or vice versa) is penalised.
+   */
+  phrase?: Float32Array;
+  phraseWeight?: number;
+  /**
+   * Per-beat cost of putting a seam at the START of that beat (e.g. a vocal
+   * note is sounding). Applied to both sides: the outgoing boundary i+1 and
+   * the landing beat j.
+   */
+  boundaryPenalty?: Float32Array;
+}
+
 /**
  * Transition cost T[i * n + j] for "after beat i, play beat j instead of i+1".
  * The seam is good if the music leading up to beat i resembles what normally
@@ -61,7 +76,8 @@ export const DEFAULT_TRANSITION_OPTIONS: TransitionOptions = {
  * We compare aligned pairs (i+1+d, j+d) for d in [-K, K-1] with weights that
  * decay away from the seam. Invalid transitions are +Infinity.
  */
-export function transitionMatrix(D: Float32Array, n: number, opts: TransitionOptions = DEFAULT_TRANSITION_OPTIONS): Float32Array {
+export function transitionMatrix(D: Float32Array, n: number, opts: TransitionOptions = DEFAULT_TRANSITION_OPTIONS, extras: TransitionExtras = {}): Float32Array {
+  const ph = extras.phrase, phW = extras.phraseWeight ?? 0.25, bp = extras.boundaryPenalty;
   const K = opts.context;
   const T = new Float32Array(n * n).fill(Infinity);
   const weights: number[] = [];
@@ -87,6 +103,8 @@ export function transitionMatrix(D: Float32Array, n: number, opts: TransitionOpt
       if (wSum < 0.6 * wTotal) continue;
       let cost = acc / wSum;
       if ((nat - j) % opts.beatsPerBar !== 0) cost += opts.barPenalty;
+      if (ph) cost += phW * Math.abs(ph[nat] - ph[j]);
+      if (bp) cost += 0.5 * (bp[nat] + bp[j]);
       T[i * n + j] = cost;
     }
   }

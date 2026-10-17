@@ -3,17 +3,22 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Upload a song, play it forever with seamless, beat-matched loops.",
+  "description": "Upload a song, play it forever with seamless, beat-matched loops. Stem separation, loop export, all in the browser.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:wasm": "node scripts/build-wasm.mjs"
   },
   "devDependencies": {
+    "assemblyscript": "0.27.31",
     "typescript": "5.6.3",
     "vite": "5.4.11",
     "vitest": "2.1.8"
+  },
+  "dependencies": {
+    "onnxruntime-web": "1.20.1"
   }
 }

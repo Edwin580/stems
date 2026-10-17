@@ -18,6 +18,11 @@ export interface Jump {
   fade: number;
   /** Correlation between the two sides (drives the crossfade law). */
   rho: number;
+  /** Varispeed over the fade: incoming is read at rate (fade + drift) / fade. */
+  drift?: number;
+  /** Level offset (dB) for the incoming side, ramped back to 0 over gainRamp samples. */
+  gainDb?: number;
+  gainRamp?: number;
   fromBeat?: number;
   toBeat?: number;
 }
@@ -50,17 +55,26 @@ export class Splicer {
   private gain = 0;
   private gainTarget = 0;
   private readonly gainStep: number;
+  /** Mixer gain (stem volume / mute), slewed over ~20 ms. */
+  private mixGain = 1;
+  private mixTarget = 1;
+  private readonly mixStep: number;
+  /** Post-seam level correction (dB) and its per-sample decay toward 0. */
+  private levelDb = 0;
+  private levelStep = 0;
 
   constructor(channels: Float32Array[], sampleRate: number) {
     this.channels = channels;
     this.length = channels[0]?.length ?? 0;
     this.gainStep = 1 / Math.max(1, Math.round(0.01 * sampleRate));
+    this.mixStep = 1 / Math.max(1, Math.round(0.02 * sampleRate));
   }
 
   play() { this.playing = true; this.gainTarget = 1; }
   pause() { this.gainTarget = 0; }
   /** Immediately start/stop without ramps (offline rendering). */
   setRunning(on: boolean) { this.playing = on; this.gain = this.gainTarget = on ? 1 : 0; }
+  setMix(g: number, immediate = false) { this.mixTarget = g; if (immediate) this.mixGain = g; }
 
   enqueue(j: Jump) { this.queue.push(j); }
   pending(): readonly Jump[] { return this.queue; }
@@ -72,31 +86,60 @@ export class Splicer {
     return this.active ? this.active.to : this.pos;
   }
 
+  /** Copy another splicer's transport state (used to re-join a locked stem to the main path). */
+  syncFrom(o: Splicer) {
+    this.pos = o.pos;
+    this.queue = o.queue.slice();
+    this.active = o.active;
+    this.levelDb = o.levelDb;
+    this.levelStep = o.levelStep;
+    this.playing = o.playing;
+    this.gain = o.gain;
+    this.gainTarget = o.gainTarget;
+  }
+
   /** Click-free seek: crossfade from the current position into `target`. */
   seek(target: number, fade: number, id: number) {
     this.queue.length = 0;
     if (!this.playing || this.gain === 0) {
       this.active = null;
       this.pos = Math.max(0, Math.min(this.length - 1, target));
+      this.levelDb = 0;
       return;
     }
     const at = (this.active ? this.active.to : this.pos) + fade;
     this.queue.push({ id, at, to: Math.max(fade, target), fade, rho: 0 });
   }
 
-  /** Render `frames` samples into outs (one array per output channel). */
-  render(outs: Float32Array[], frames: number, offset = 0): SplicerEvent[] {
+  private sample(ch: Float32Array, x: number): number {
+    const i = Math.floor(x);
+    if (i < 0 || i >= this.length) return 0;
+    const fr = x - i;
+    const a = ch[i];
+    return fr === 0 || i + 1 >= this.length ? a : a + (ch[i + 1] - a) * fr;
+  }
+
+  /**
+   * Render `frames` samples into outs (one array per output channel).
+   * With `add`, output is summed into outs (several stems into one bus).
+   */
+  render(outs: Float32Array[], frames: number, offset = 0, add = false): SplicerEvent[] {
     const events: SplicerEvent[] = [];
     const nIn = this.channels.length;
     const nOut = outs.length;
     for (let f = 0; f < frames; f++) {
+      const o = offset + f;
       if (this.gain !== this.gainTarget) {
         this.gain += this.gain < this.gainTarget ? this.gainStep : -this.gainStep;
         if (Math.abs(this.gain - this.gainTarget) < this.gainStep) this.gain = this.gainTarget;
         if (this.gain === 0 && this.gainTarget === 0) this.playing = false;
       }
+      if (this.mixGain !== this.mixTarget) {
+        this.mixGain += this.mixGain < this.mixTarget ? this.mixStep : -this.mixStep;
+        if (Math.abs(this.mixGain - this.mixTarget) < this.mixStep) this.mixGain = this.mixTarget;
+      }
       if (!this.playing || this.pos >= this.length) {
-        for (let c = 0; c < nOut; c++) outs[c][offset + f] = 0;
+        if (!add) for (let c = 0; c < nOut; c++) outs[c][o] = 0;
         if (this.playing && this.pos >= this.length) {
           this.playing = false;
           events.push({ type: 'ended', frame: f });
@@ -108,24 +151,39 @@ export class Splicer {
         // A jump that arrived too late to fade on schedule: start its fade now.
         this.active = this.pos >= next.at ? { ...next, at: this.pos + next.fade } : next;
       }
+      let lvl = 1;
+      if (this.levelDb !== 0) {
+        lvl = 10 ** (this.levelDb / 20);
+        this.levelDb -= this.levelStep;
+        if (Math.sign(this.levelDb) !== Math.sign(this.levelDb + this.levelStep)) this.levelDb = 0;
+      }
+      const g = this.gain * this.mixGain;
       const j = this.active;
       if (j) {
         const t = this.pos - (j.at - j.fade);
         const [ga, gb] = crossfadeGains((t + 0.5) / j.fade, j.rho);
-        const inIdx = j.to - j.fade + t;
+        const drift = j.drift ?? 0;
+        const inPos = j.to - j.fade - drift + (t * (j.fade + drift)) / j.fade;
+        const inLvl = j.gainDb ? 10 ** (j.gainDb / 20) : 1;
         for (let c = 0; c < nOut; c++) {
           const ch = this.channels[c % nIn];
-          const b = inIdx >= 0 && inIdx < this.length ? ch[inIdx] : 0;
-          outs[c][offset + f] = (ga * ch[this.pos] + gb * b) * this.gain;
+          const v = (ga * lvl * ch[this.pos] + gb * inLvl * this.sample(ch, inPos)) * g;
+          if (add) outs[c][o] += v; else outs[c][o] = v;
         }
         this.pos++;
         if (this.pos >= j.at) {
           this.pos = j.to;
           this.active = null;
+          this.levelDb = j.gainDb ?? 0;
+          this.levelStep = this.levelDb / Math.max(1, j.gainRamp ?? 1);
           events.push({ type: 'jumped', id: j.id, frame: f });
         }
       } else {
-        for (let c = 0; c < nOut; c++) outs[c][offset + f] = this.channels[c % nIn][this.pos] * this.gain;
+        const gl = g * lvl;
+        for (let c = 0; c < nOut; c++) {
+          const v = this.channels[c % nIn][this.pos] * gl;
+          if (add) outs[c][o] += v; else outs[c][o] = v;
+        }
         this.pos++;
       }
     }

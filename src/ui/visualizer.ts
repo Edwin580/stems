@@ -32,9 +32,9 @@ export class Visualizer {
     canvas.addEventListener('click', (e) => {
       const r = canvas.getBoundingClientRect();
       const frac = (e.clientX - r.left) / r.width;
-      if (!this.analysis) return;
-      // Snap to the nearest beat so seeks land on the grid.
       const s = frac * this.length;
+      if (!this.analysis) { this.onSeek(s); return; }
+      // Snap to the nearest beat so seeks land on the grid.
       const beats = this.analysis.beats;
       let best = beats[0];
       for (const b of beats) if (Math.abs(b - s) < Math.abs(best - s)) best = b;
@@ -42,8 +42,11 @@ export class Visualizer {
     });
   }
 
-  setSong(channels: Float32Array[], analysis: Analysis) {
+  setSong(channels: Float32Array[], analysis: Analysis | null) {
     this.analysis = analysis;
+    this.edges = [];
+    this.core = new Uint8Array(0);
+    this.loop = null;
     this.length = channels[0].length;
     const buckets = 3000;
     this.peaks = new Float32Array(buckets);
@@ -54,6 +57,11 @@ export class Visualizer {
       for (const ch of channels) for (let i = s; i < e; i += 4) m = Math.max(m, Math.abs(ch[i]));
       this.peaks[b] = m;
     }
+    this.drawStatic();
+  }
+
+  setAnalysis(analysis: Analysis) {
+    this.analysis = analysis;
     this.drawStatic();
   }
 
@@ -91,12 +99,20 @@ export class Visualizer {
     const g = this.layer.getContext('2d')!;
     const W = this.layer.width, H = this.layer.height;
     g.clearRect(0, 0, W, H);
-    if (!this.analysis) return;
-    const a = this.analysis;
     const base = this.baseline;
     const amp = H * 0.18;
     const dim = css('--muted-wave');
     const bright = css('--wave');
+    if (!this.analysis) {
+      g.fillStyle = dim;
+      for (let px = 0; px < W; px++) {
+        const p = this.peaks[Math.min(this.peaks.length - 1, Math.floor((px / W) * this.peaks.length))] ?? 0;
+        const h = Math.max(1, p * amp);
+        g.fillRect(px, base - h, 1, h * 2);
+      }
+      return;
+    }
+    const a = this.analysis;
     // Loop region.
     if (this.loop) {
       g.fillStyle = css('--loop-bg');
@@ -141,12 +157,16 @@ export class Visualizer {
   }
 
   /** Per-frame draw: static layer + upcoming jumps + playhead. */
-  draw(position: number, queue: readonly Jump[]) {
+  draw(position: number, queue: readonly Jump[], lockedHeads: { pos: number; label: string }[] = []) {
     const g = this.ctx;
     const W = this.canvas.width, H = this.canvas.height;
     g.clearRect(0, 0, W, H);
     g.drawImage(this.layer, 0, 0);
-    if (!this.analysis) return;
+    if (!this.analysis) {
+      g.fillStyle = css('--playhead');
+      g.fillRect(Math.round(this.x(position)) - this.dpr, 0, 2 * this.dpr, H);
+      return;
+    }
     const maxH = H * 0.45;
     // Next planned jump.
     const next = queue[0];
@@ -169,6 +189,14 @@ export class Visualizer {
         g.globalAlpha = 1;
       }
     }
+    // Locked stems run their own loop: show their playheads too.
+    g.font = `${11 * this.dpr}px ui-sans-serif, system-ui, sans-serif`;
+    lockedHeads.forEach((h, k) => {
+      const lx = Math.round(this.x(h.pos));
+      g.fillStyle = css('--accent');
+      g.fillRect(lx - this.dpr / 2, H * 0.55, this.dpr, H * 0.45);
+      g.fillText(h.label, lx + 4 * this.dpr, H * 0.6 + k * 13 * this.dpr);
+    });
     const x = this.x(position);
     g.fillStyle = css('--playhead');
     g.fillRect(Math.round(x) - this.dpr, 0, 2 * this.dpr, H);
