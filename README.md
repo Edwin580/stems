@@ -47,7 +47,7 @@ tests/        Vitest suites
 The endless engine needs a decoded audio buffer, so it works on uploaded files (and the demo track). YouTube and Spotify play through their official players, in the same app:
 
 - **YouTube** — paste any watch / youtu.be / embed / Shorts link; it plays embedded. Set `VITE_YOUTUBE_API_KEY` (Data API v3) for in-app search.
-- **Spotify** — connect with OAuth (PKCE, so no client secret in the browser). Search tracks, play full songs in-app with the Web Playback SDK (needs Premium), or play 30-second previews / open in Spotify without it.
+- **Spotify** — connect with OAuth (PKCE, so no client secret in the browser). Search tracks, play full songs in-app with the Web Playback SDK (needs Premium), loop the whole track with Spotify's native repeat, or loop an A-B section by seeking back to its start. Spotify's SDK is an encrypted stream with playback control and metadata only — it exposes no audio samples, so beat-matched seamless loops, stems and WAV export still require the same song as an uploaded file (there is a one-click local-file button in the Spotify panel for that).
 
 Setup: the app's public Client ID is built in as the default, so Spotify works out of the box. To use your own app instead, copy `.env.example` to `.env`, create a free app at https://developer.spotify.com/dashboard, and register the app's root URL as a Redirect URI (local dev: `http://127.0.0.1:5173/` — Spotify rejects `localhost`, so open the dev server via 127.0.0.1; production: `https://edwin580.github.io/stems/`).
 
