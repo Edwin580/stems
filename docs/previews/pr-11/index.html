@@ -9,8 +9,8 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
-    <script type="module" crossorigin src="./assets/index-DP4ZuPPn.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-C5fWTM0X.css">
+    <script type="module" crossorigin src="./assets/index-CSIhBFP0.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DxIthmdI.css">
   </head>
   <body>
     <header>
@@ -54,6 +54,17 @@
           </div>
 
           <canvas id="viz" aria-label="Song map: waveform, beats and jumps. Tap to jump there."></canvas>
+          <div id="section" class="section hidden">
+            <div class="range">
+              <div class="range-track"><div id="range-fill" class="range-fill"></div></div>
+              <input id="sec-start" type="range" min="0" max="1000" step="1" value="0" aria-label="Section start" />
+              <input id="sec-end" type="range" min="0" max="1000" step="1" value="1000" aria-label="Section end" />
+            </div>
+            <div class="section-row">
+              <span id="sec-label" class="sub">Drag the handles to choose the part that plays</span>
+              <button id="sec-reset" class="link hidden">Use the whole song</button>
+            </div>
+          </div>
 
           <div class="transport">
             <button id="play" class="primary round" aria-label="Play" disabled>▶</button>
