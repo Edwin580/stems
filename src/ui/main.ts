@@ -8,6 +8,13 @@ import { costToQuality } from '../engine/similarity';
 import { wasmFFTAvailable } from '../engine/wasm-fft';
 import { ensureIsolationState, setIsolation } from './isolation';
 import { Visualizer } from './visualizer';
+import { parseLrc, lineAt, type LyricLine } from '../lyrics/lrc';
+import { alignLoopsToLyrics, linesInLoop } from '../lyrics/loopalign';
+import { parseYouTubeId, searchYouTube, YouTubeSource } from '../sources/youtube';
+import {
+  handleSpotifyCallback, searchSpotifyTracks, spotifyConfigured, spotifyLogin,
+  spotifyLogout, spotifyToken, SpotifyWebPlayer, type SpotifyTrack,
+} from '../sources/spotify';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const fmt = (sec: number) => {
@@ -179,6 +186,7 @@ for (const id of ['bars', 'thr', 'fade', 'phrase', 'barlock', 'autofade', 'loudn
     syncControls();
   });
 }
+$('lyric-align').addEventListener('change', () => renderLoops());
 
 function setTab(t: 'endless' | 'loop' | 'stems') {
   tab = t;
@@ -209,23 +217,35 @@ function download(blob: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+let lyricLines: LyricLine[] = [];
+
+function displayedLoops(): LoopCandidate[] {
+  const p = player;
+  if (!p) return [];
+  const align = lyricLines.length > 0 && $<HTMLInputElement>('lyric-align').checked;
+  return align ? alignLoopsToLyrics(p.loops, lyricLines, p.source!.sampleRate) : p.loops;
+}
+
 function renderLoops() {
   const p = player;
   const ol = $('loops');
   ol.innerHTML = '';
   if (!p?.analysis) return;
-  if (!p.loops.length) {
+  const loops = displayedLoops();
+  if (!loops.length) {
     ol.innerHTML = '<li>No loop of 8+ bars passed verification for this track. Endless mode still works.</li>';
     return;
   }
   const sr = p.source!.sampleRate;
   const sel = p.currentSettings.loop;
-  p.loops.forEach((l, i) => {
+  $('lyric-align-row').classList.toggle('hidden', lyricLines.length === 0);
+  loops.forEach((l, i) => {
     const li = document.createElement('li');
     if (sel && sel.startSample === l.startSample && sel.endSample === l.endSample) li.classList.add('sel');
+    const lyricNote = lyricLines.length ? ` · ${linesInLoop(l, lyricLines, sr).length} lyric lines` : '';
     li.innerHTML = `
       <span class="q">${l.quality}%</span>
-      <span class="meta"><b>#${i + 1} · ${l.bars} bars · ${fmt(l.seconds)}</b><br>${fmt(l.startSample / sr)} → ${fmt(l.endSample / sr)} · phase ${(Math.max(0, l.rho) * 100).toFixed(0)}% · fade ${Math.round((l.fade / sr) * 1000)} ms</span>
+      <span class="meta"><b>#${i + 1} · ${l.bars} bars · ${fmt(l.seconds)}</b><br>${fmt(l.startSample / sr)} → ${fmt(l.endSample / sr)} · phase ${(Math.max(0, l.rho) * 100).toFixed(0)}% · fade ${Math.round((l.fade / sr) * 1000)} ms${lyricNote}</span>
       <span class="acts">
         <button data-act="use" class="primary">Loop this</button>
         <button data-act="seam">Hear seam</button>
@@ -515,6 +535,7 @@ if (!import.meta.env.PROD && !crossOriginIsolated) {
 mt.addEventListener('change', () => { void setIsolation(mt.checked); });
 
 // ---- Render loop -------------------------------------------------------------------
+let lyricActiveIdx = -1;
 function frame() {
   const p = player;
   if (p?.source) {
@@ -528,6 +549,16 @@ function frame() {
     $('jumps').textContent = String(p.jumpCount);
     $('sleep-left').textContent = p.sleepAt ? fmt((p.sleepAt - Date.now()) / 1000) : '';
     updatePlayButton();
+    if (lyricLines.length) {
+      const idx = lineAt(lyricLines, pos / p.source.sampleRate);
+      if (idx !== lyricActiveIdx) {
+        lyricActiveIdx = idx;
+        document.querySelectorAll<HTMLDivElement>('#lyrics .line').forEach((el, i) => {
+          el.classList.toggle('active', i === idx);
+          if (i === idx) el.scrollIntoView({ block: 'nearest' });
+        });
+      }
+    }
   }
   requestAnimationFrame(frame);
 }
@@ -543,3 +574,189 @@ lq?.setConsumer(async (params) => {
   const h = params.files[0];
   if (h) load({ file: await h.getFile() });
 });
+
+// ---- Lyrics (.lrc) ----
+
+function renderLyrics() {
+  const box = $('lyrics');
+  box.innerHTML = '';
+  lyricActiveIdx = -1;
+  lyricLines.forEach((l) => {
+    const d = document.createElement('div');
+    d.className = 'line';
+    d.innerHTML = `<span class="t">${fmt(l.time)}</span><span>${escapeHtml(l.text)}</span>`;
+    d.addEventListener('click', () => player?.seek(Math.round(l.time * player!.source!.sampleRate)));
+    box.appendChild(d);
+  });
+  renderLoops();
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+$('lrc-pick').addEventListener('click', () => $<HTMLInputElement>('lrc').click());
+$<HTMLInputElement>('lrc').addEventListener('change', async (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  (e.target as HTMLInputElement).value = '';
+  if (!f) return;
+  const lines = parseLrc(await f.text());
+  if (!lines.length) {
+    $('lrc-name').textContent = 'No synced lines found in that file.';
+    return;
+  }
+  lyricLines = lines;
+  $('lrc-name').textContent = `${lines.length} synced lines loaded.`;
+  renderLyrics();
+});
+
+// ---- YouTube ----
+
+let yt: YouTubeSource | null = null;
+const ytKey = import.meta.env.VITE_YOUTUBE_API_KEY as string | undefined;
+if (ytKey) $('yt-search-row').classList.remove('hidden');
+
+async function ytPlayId(id: string) {
+  const status = $('yt-status');
+  status.textContent = 'Loading YouTube player…';
+  try {
+    yt ??= new YouTubeSource($('yt-player'));
+    yt.events = {
+      onReady: (d) => { status.textContent = `Ready · ${fmt(d)}`; },
+      onState: (s) => { status.textContent = s === 'playing' ? 'Playing' : s === 'paused' ? 'Paused' : s === 'ended' ? 'Ended' : 'Buffering…'; },
+      onError: (m) => { status.textContent = m; },
+    };
+    await yt.load(id);
+    yt.play();
+  } catch (err) {
+    status.textContent = `Couldn't load that video: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+$('yt-load').addEventListener('click', () => {
+  const id = parseYouTubeId($<HTMLInputElement>('yt-url').value);
+  if (!id) { $('yt-status').textContent = 'That doesn\u2019t look like a YouTube link or video ID.'; return; }
+  ytPlayId(id);
+});
+$('yt-search').addEventListener('click', async () => {
+  const q = $<HTMLInputElement>('yt-q').value.trim();
+  if (!q) return;
+  const status = $('yt-status');
+  status.textContent = 'Searching…';
+  try {
+    const results = await searchYouTube(q, ytKey);
+    status.textContent = results.length ? '' : 'No music videos found.';
+    for (const r of results.slice(0, 5)) {
+      const d = document.createElement('div');
+      d.className = 'mini-result';
+      d.innerHTML = `<b>${escapeHtml(r.title)}</b><br><span>${escapeHtml(r.channel)}</span>`;
+      d.addEventListener('click', () => ytPlayId(r.videoId));
+      status.appendChild(d);
+    }
+  } catch (err) {
+    status.textContent = err instanceof Error ? err.message : String(err);
+  }
+});
+
+// ---- Spotify ----
+
+const spPlayer = new SpotifyWebPlayer();
+const spAudio = new Audio();
+spAudio.preload = 'none';
+
+async function spRefreshAuth() {
+  const logged = !!(await spotifyToken().catch(() => null));
+  $('sp-connect').classList.toggle('hidden', logged);
+  $('sp-disconnect').classList.toggle('hidden', !logged);
+  $('sp-search-row').classList.toggle('hidden', !logged);
+  $('sp-player-row').classList.toggle('hidden', !logged);
+  if (!logged && !spotifyConfigured()) {
+    $('sp-now').textContent = 'Set VITE_SPOTIFY_CLIENT_ID in .env to connect Spotify.';
+  } else if (!logged) {
+    $('sp-now').textContent = '';
+  }
+}
+
+spPlayer.events = {
+  onReady: () => { $('sp-status').textContent = 'In-app playback ready.'; },
+  onState: (playing, name) => { $('sp-now').textContent = playing ? `▶ ${name}` : name ? `❚❚ ${name}` : ''; },
+  onError: (m) => { $('sp-status').textContent = m; },
+};
+
+$('sp-connect').addEventListener('click', () => spotifyLogin().catch((e) => { $('sp-now').textContent = e.message; }));
+$('sp-disconnect').addEventListener('click', () => {
+  spPlayer.disconnect();
+  spAudio.pause();
+  spotifyLogout();
+  $('sp-results').innerHTML = '';
+  spRefreshAuth();
+});
+$('sp-device').addEventListener('click', async () => {
+  spPlayer.activate();
+  $('sp-status').textContent = 'Starting player…';
+  try { await spPlayer.ensureReady(); }
+  catch (err) { $('sp-status').textContent = err instanceof Error ? err.message : String(err); }
+});
+
+// Cross-origin isolation (multi-threaded mode) blocks the embedded YouTube and
+// Spotify players, so say so where they live and offer the switch.
+if (crossOriginIsolated) {
+  const note = document.createElement('p');
+  note.className = 'notice-inline';
+  note.innerHTML = 'Multi-threaded mode is on, which blocks the embedded YouTube and Spotify players. <button type="button">Turn it off</button>';
+  note.querySelector('button')!.addEventListener('click', () => { void setIsolation(false); });
+  $('sources').querySelector('.hint')!.after(note);
+}
+$('sp-search').addEventListener('click', async () => {
+  const q = $<HTMLInputElement>('sp-q').value.trim();
+  if (!q) return;
+  const ol = $('sp-results');
+  ol.innerHTML = '';
+  try {
+    const tracks = await searchSpotifyTracks(q);
+    if (!tracks.length) { $('sp-now').textContent = 'No tracks found.'; return; }
+    for (const t of tracks) playSpotifyResult(t, ol);
+  } catch (err) {
+    $('sp-now').textContent = err instanceof Error ? err.message : String(err);
+  }
+});
+
+function playSpotifyResult(t: SpotifyTrack, ol: HTMLElement) {
+  const li = document.createElement('li');
+  li.innerHTML = `
+    <span class="q">${t.image ? `<img src="${t.image}" alt="" width="40" height="40" />` : ''}</span>
+    <span class="meta"><b>${escapeHtml(t.name)}</b><br>${escapeHtml(t.artists)} · ${escapeHtml(t.album)}</span>
+    <span class="acts">
+      <button data-act="play" class="primary">Play</button>
+      ${t.previewUrl ? '<button data-act="preview">Preview</button>' : ''}
+      <button data-act="open">Open in Spotify</button>
+    </span>`;
+  li.querySelector<HTMLButtonElement>('[data-act=play]')!.onclick = async () => {
+    spPlayer.activate(); // must run inside the click, before any await
+    $('sp-status').textContent = 'Starting playback…';
+    try {
+      spAudio.pause();
+      await spPlayer.playUri(t.uri);
+      $('sp-status').textContent = '';
+      $('sp-now').textContent = `▶ ${t.name} — ${t.artists}`;
+    } catch (err) {
+      $('sp-status').textContent = err instanceof Error ? err.message : String(err);
+    }
+  };
+  // Spotify no longer returns preview URLs for most tracks; the button only exists when it does.
+  const previewBtn = li.querySelector<HTMLButtonElement>('[data-act=preview]');
+  if (previewBtn) previewBtn.onclick = () => {
+    spAudio.src = t.previewUrl!;
+    spAudio.play().catch((e) => { $('sp-status').textContent = `Preview failed: ${e instanceof Error ? e.message : String(e)}`; });
+    $('sp-now').textContent = `♪ Preview · ${t.name} — ${t.artists}`;
+  };
+  li.querySelector<HTMLButtonElement>('[data-act=open]')!.onclick = () =>
+    window.open(`https://open.spotify.com/track/${t.id}`, '_blank', 'noopener');
+  ol.appendChild(li);
+}
+
+// OAuth callback: ?code= lands on this page; exchange it, then clean the URL.
+handleSpotifyCallback()
+  .then((done) => { if (done) $('sp-now').textContent = 'Spotify connected.'; })
+  .catch((err) => { $('sp-now').textContent = err instanceof Error ? err.message : String(err); })
+  .finally(() => spRefreshAuth());
