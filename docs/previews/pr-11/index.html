@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d0f14" />
+    <meta name="description" content="Pick a song and it plays forever: seamless, beat-matched loops, stem separation and long renders, all on your device." />
+    <title>stems — play any song forever</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <script type="module" crossorigin src="./assets/index-LDtFVjfY.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-C5fWTM0X.css">
+  </head>
+  <body>
+    <header>
+      <div class="brand"><span class="logo">∞</span> stems</div>
+    </header>
+
+    <main>
+      <section id="share-banner" class="card notice hidden"></section>
+      <section id="error" class="card error hidden" role="alert"></section>
+
+      <section id="home" class="home">
+        <h1>Play any song forever.</h1>
+        <p class="lede">Pick a song from your device. stems finds the moments where the music repeats and joins them so smoothly you can't hear the seams. It keeps playing with your screen off.</p>
+        <div id="drop" class="drop">
+          <input id="file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.opus,.aac" hidden />
+          <button id="pick" class="primary big">Choose a song</button>
+          <div class="sub">or drop an audio file here · MP3, M4A, WAV, FLAC, OGG</div>
+        </div>
+        <button id="demo" class="link">No song handy? Try the demo</button>
+        <ol class="how">
+          <li><span><b>Choose a song.</b> It never leaves your device.</span></li>
+          <li><span><b>Press play.</b> It keeps going, jumping between matching moments.</span></li>
+          <li><span><b>Make it yours.</b> Loop one part, split out vocals or drums, add lyrics, or save a long version.</span></li>
+        </ol>
+        <p class="note">Songs on Spotify or YouTube: those apps keep their audio locked inside their own players, so no other app can loop or split it. Use an audio file you have.</p>
+      </section>
+
+      <section id="app" class="hidden">
+        <div class="card player">
+          <div class="title-row">
+            <div class="who">
+              <div id="track" class="track">—</div>
+              <div id="artist" class="artist"></div>
+            </div>
+            <button id="another" class="ghost">Change song</button>
+          </div>
+
+          <div id="aprog" class="aprog">
+            <div class="progress-label"><span id="stage">Opening</span><span id="pct">0%</span></div>
+            <div class="bar"><div id="bar-fill"></div></div>
+          </div>
+
+          <canvas id="viz" aria-label="Song map: waveform, beats and jumps. Tap to jump there."></canvas>
+
+          <div class="transport">
+            <button id="play" class="primary round" aria-label="Play" disabled>▶</button>
+            <div class="seg" role="group" aria-label="Playback mode">
+              <button data-mode="endless" aria-pressed="true">Endless</button>
+              <button data-mode="loop" aria-pressed="false">Loop</button>
+            </div>
+            <div class="spacer"></div>
+            <label class="sleep" title="Sleep timer">
+              <span aria-hidden="true">☾</span>
+              <select id="sleep" aria-label="Sleep timer">
+                <option value="0">No timer</option>
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="60">1 hour</option>
+                <option value="90">90 min</option>
+              </select>
+              <span id="sleep-left" class="sub"></span>
+            </label>
+          </div>
+          <p id="mode-hint" class="mode-hint"></p>
+          <div class="clock">
+            <span><span class="k">Listening</span> <span id="listened">0:00</span></span>
+            <span><span class="k">In song</span> <span id="posn">0:00</span></span>
+            <span><span class="k">Seams</span> <span id="jumps">0</span></span>
+          </div>
+        </div>
+
+        <nav class="tabs" role="tablist">
+          <button role="tab" data-tab="loops" class="tab active">Loops</button>
+          <button role="tab" data-tab="stems" class="tab">Stems</button>
+          <button role="tab" data-tab="lyrics" class="tab">Lyrics</button>
+          <button role="tab" data-tab="save" class="tab">Save</button>
+          <button role="tab" data-tab="tune" class="tab">Tune</button>
+        </nav>
+
+        <div id="panel-loops" class="card panel">
+          <p class="hint">Sections that repeat with a seam you can't hear. Pick one to switch to Loop mode. The % is how closely the seam matches.</p>
+          <label class="check hidden" id="lyric-align-row"><input id="lyric-align" type="checkbox" /> Prefer loops that start on a lyric line</label>
+          <ol id="loops" class="loops"></ol>
+        </div>
+
+        <div id="panel-stems" class="card panel hidden">
+          <p class="hint">Split the song into drums, bass, vocals and other, then mute, solo or turn each one up or down. Jumps then avoid cutting someone off mid-word.</p>
+          <div id="sep-actions" class="choices">
+            <button id="sep-dsp" class="choice">
+              <b>Quick split</b>
+              <span>A few seconds. Good for instrumentals and karaoke.</span>
+            </button>
+            <button id="sep-ml" class="choice">
+              <b>Best quality</b>
+              <span>AI model (HTDemucs). One-time ~180 MB download, then a few minutes per song.</span>
+            </button>
+          </div>
+          <small id="sep-note" class="sub"></small>
+          <div id="sprog" class="aprog hidden">
+            <div class="progress-label"><span id="sstage">Separating</span><span id="spct">0%</span></div>
+            <div class="bar"><div id="sbar-fill"></div></div>
+          </div>
+          <div id="mixer" class="mixer hidden">
+            <div class="presets">
+              <button data-preset="full">Everything</button>
+              <button data-preset="instrumental">No vocals</button>
+              <button data-preset="acapella">Vocals only</button>
+              <button data-preset="drums">Drums + bass</button>
+            </div>
+            <div id="stem-rows"></div>
+            <label class="check"><input id="vocalaware" type="checkbox" checked /> Don't jump while someone is singing</label>
+            <small class="sub">🔒 keeps a stem cycling on the selected loop while the rest of the song keeps moving.</small>
+            <button id="sep-again" class="link">Split again with the other method</button>
+          </div>
+        </div>
+
+        <div id="panel-lyrics" class="card panel hidden">
+          <form id="lyr-form" class="search">
+            <input id="lyr-q" type="search" placeholder="Song and artist" aria-label="Song and artist" autocomplete="off" />
+            <button class="primary" type="submit">Find lyrics</button>
+          </form>
+          <div id="lyr-status" class="sub" role="status"></div>
+          <ol id="lyr-results" class="results"></ol>
+          <div id="lyrics" class="lyrics" aria-live="off"></div>
+          <div class="row-left">
+            <input id="lrc" type="file" accept=".lrc,.txt" hidden />
+            <button id="lrc-pick" class="link">Have a .lrc file? Load it</button>
+          </div>
+        </div>
+
+        <div id="panel-save" class="card panel hidden">
+          <h2>Long version</h2>
+          <p class="hint">A continuous render of Endless mode, through your current stem mix. Handy for sleep, study or a DJ set.</p>
+          <div class="export">
+            <label>Length <input id="mins" type="number" min="1" max="60" value="10" inputmode="numeric" /> min</label>
+            <select id="fmt" aria-label="Format">
+              <option value="mp3">MP3</option>
+              <option value="wav">WAV (lossless)</option>
+            </select>
+            <label class="check"><input id="realend" type="checkbox" checked /> Finish on the song's real ending</label>
+            <button id="render" class="primary">Download</button>
+            <small id="render-note"></small>
+          </div>
+          <h2>A single loop</h2>
+          <p class="hint">Each loop in the Loops tab has a WAV button. The file carries loop points, so samplers and DAWs repeat it with no gap.</p>
+          <h2>Share</h2>
+          <p class="hint">A link with your loop and settings (never the audio). The other person opens the same song file to hear it.</p>
+          <button id="share">Copy share link</button>
+          <div id="share-out" class="share-out hidden">
+            <input id="share-url" readonly aria-label="Share link" />
+          </div>
+        </div>
+
+        <div id="panel-tune" class="card panel hidden">
+          <p class="hint">How Endless mode moves around. The defaults suit most songs.</p>
+          <label class="ctl">
+            <span>Jump about every <b id="bars-v">8</b> bars</span>
+            <input id="bars" type="range" min="1" max="32" step="1" value="8" />
+          </label>
+          <label class="ctl">
+            <span>Seam strictness <b id="thr-v"></b></span>
+            <input id="thr" type="range" min="0.05" max="0.6" step="0.01" value="0.3" />
+            <small>Stricter means fewer, cleaner jumps. <span id="thr-note"></span></small>
+          </label>
+          <label class="ctl">
+            <span>Prefer ends of phrases <b id="phrase-v">60%</b></span>
+            <input id="phrase" type="range" min="0" max="1" step="0.05" value="0.6" />
+          </label>
+          <label class="ctl">
+            <span>Crossfade <b id="fade-v">60 ms</b></span>
+            <input id="fade" type="range" min="5" max="200" step="5" value="60" />
+          </label>
+          <div class="checks">
+            <label class="check"><input id="barlock" type="checkbox" checked /> Only jump on bar lines</label>
+            <label class="check"><input id="autofade" type="checkbox" checked /> Adaptive fades (never split a drum hit)</label>
+            <label class="check"><input id="loudness" type="checkbox" checked /> Match loudness across seams</label>
+          </div>
+          <div id="stats" class="stats"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div>Everything runs on your device. Nothing is uploaded. <button id="install" class="link hidden">Install the app</button></div>
+      <details class="adv">
+        <summary>Advanced</summary>
+        <label class="check" title="Cross-origin isolation: shared memory and multi-threaded WASM. Reloads the page.">
+          <input id="multithread" type="checkbox" /> Multi-threaded mode <small id="multithread-note" class="sub">(about 4× faster best-quality stems on CPU; reloads the page)</small>
+        </label>
+        <label class="ctl"><span>Stem model URL (HTDemucs ONNX)</span><input id="model-url" type="url" /></label>
+        <div class="row-left"><button id="clear-cache">Clear saved analysis and models</button> <span id="env-note" class="sub"></span></div>
+        <p class="sub">Custom engine: local-tempo beat tracking · multi-cue downbeats · phrase novelty · context-matched self-similarity · strongly-connected jump graph · cross-correlation seam alignment · adaptive, varispeed, correlation-aware crossfades · per-stem splicing in an AudioWorklet · WASM SIMD FFT.</p>
+      </details>
+    </footer>
+  </body>
+</html>
