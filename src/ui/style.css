@@ -95,6 +95,30 @@ input[type=checkbox] { accent-color: var(--accent); width: 18px; height: 18px; m
 .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 .aprog { margin: 4px 0 12px; }
 #viz { width: 100%; height: 150px; display: block; cursor: pointer; border-radius: 10px; touch-action: manipulation; }
+
+/* Section handles: two range inputs on one track, widened by half a thumb on
+   each side so a thumb's centre lines up with the same moment on the map. */
+.section { margin-top: 4px; }
+.range { position: relative; height: 34px; margin: 0 -12px; }
+.range-track { position: absolute; left: 12px; right: 12px; top: 15px; height: 4px; border-radius: 2px; background: var(--border); }
+.range-fill { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 2px; }
+.range input {
+  position: absolute; inset: 0; width: 100%; height: 34px; margin: 0; padding: 0;
+  -webkit-appearance: none; appearance: none; background: none; pointer-events: none;
+}
+.range input::-webkit-slider-runnable-track { background: none; height: 34px; }
+.range input::-moz-range-track { background: none; }
+.range input::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; pointer-events: auto; cursor: ew-resize;
+  width: 24px; height: 30px; margin-top: 2px; border-radius: 8px; border: 2px solid var(--card);
+  background: var(--accent); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.range input::-moz-range-thumb {
+  pointer-events: auto; cursor: ew-resize; width: 20px; height: 26px; border-radius: 8px;
+  border: 2px solid var(--card); background: var(--accent); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.range input:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--text); outline-offset: 1px; }
+.section-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 28px; }
 .transport { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
 .seg button { border: 0; border-radius: 999px; padding: 7px 16px; color: var(--sub); }

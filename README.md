@@ -3,6 +3,7 @@
 Pick a song and it plays forever. stems is an infinite jukebox built so you can't hear the seams, and it keeps playing with your screen off.
 
 - **Endless:** wanders through the song without stopping, jumping between moments that are musically equivalent. Every jump is bar-aligned and prefers phrase boundaries. It is checked against several beats of context, phase-aligned to the exact sample, and gets an adaptive crossfade that never splits a drum hit. Small tempo and level differences across the jump are evened out.
+- **Section handles:** drag start and end under the song map (they snap to bar lines). Loop mode repeats exactly that part with a verified seam; Endless wanders only inside it.
 - **Loop:** finds single-seam loops that have been verified at sample level. You can preview the seam, or export a WAV that loops gaplessly anywhere and carries sampler loop points.
 - **Stems:** splits the song into drums, bass, vocals and other, using either a fast built-in DSP separator or HTDemucs running in your browser on WebGPU or WASM.
   - Seams avoid moments where someone is singing, and each stem gets its own crossfade.

@@ -143,6 +143,8 @@ function resetSongUi() {
   $('lyr-status').textContent = '';
   $('render-note').textContent = '';
   show('share-out', false);
+  show('section', false);
+  viz.setSection(null);
   setMode('endless', false);
 }
 
@@ -167,6 +169,7 @@ function onAnalysed(fromCache: boolean) {
   viz.setAnalysis(a);
   $<HTMLInputElement>('thr').value = String(p.currentSettings.threshold);
   syncControls();
+  initSection();
   renderLoops();
   applyShare();
   updateModeHint();
@@ -178,7 +181,21 @@ function currentMode(): 'endless' | 'loop' { return player?.currentSettings.mode
 
 function setMode(mode: 'endless' | 'loop', apply = true) {
   document.querySelectorAll<HTMLButtonElement>('.seg [data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
-  if (apply) player?.updateSettings({ mode });
+  const p = player;
+  if (apply && p) {
+    p.updateSettings({ mode });
+    if (mode === 'loop' && p.analysis) {
+      // Loop mode always shows its loop on the handles: the section if one is
+      // set, otherwise the best loop found.
+      const r = p.currentSettings.range;
+      const loop = r ? p.loopFor(r) : p.currentSettings.loop ?? p.loops[0];
+      if (loop) {
+        p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop);
+        relockStems(loop);
+      }
+      syncSectionInputs();
+    }
+  }
   refreshGraph();
   renderLoops();
   updateModeHint();
@@ -190,15 +207,21 @@ function updateModeHint() {
   const el = $('mode-hint');
   if (!p?.source) { el.textContent = ''; return; }
   if (!p.analysis) { el.textContent = 'You can press play now. Seamless jumps switch on in a few seconds.'; return; }
+  const sr = p.source.sampleRate;
+  const r = p.currentSettings.range;
   if (currentMode() === 'endless') {
-    el.textContent = 'Endless: moves through the song, jumping between moments that match. It never ends.';
+    el.textContent = r
+      ? `Endless, inside ${fmt(p.analysis.beats[r.start] / sr)}–${fmt(p.analysis.beats[r.end] / sr)}: jumps around within that part and never leaves it.`
+      : 'Endless: moves through the song, jumping between moments that match. It never ends.';
     return;
   }
   const loop = p.currentSettings.loop;
   const i = loop ? displayedLoops().findIndex((l) => l.startSample === loop.startSample && l.endSample === loop.endSample) : -1;
+  const seam = loop && loop.rho >= 0.8 && loop.spectralDb <= 4 ? 'smooth seam' : loop && loop.rho >= 0.5 ? 'decent seam' : 'the seam may be audible, so try moving a handle a bar or two';
+  const what = i >= 0 ? `loop ${i + 1}` : r ? 'your section' : 'the whole song';
   el.textContent = loop
-    ? `Loop: repeating ${i >= 0 ? `loop ${i + 1}` : 'a section'} (${loop.bars} bars, ${fmt(loop.startSample / p.source.sampleRate)}–${fmt(loop.endSample / p.source.sampleRate)}) forever. Pick another in Loops.`
-    : 'Loop: no seamless loop was found in this song. Endless still works.';
+    ? `Loop: repeating ${what} (${fmt(loop.startSample / sr)}–${fmt(loop.endSample / sr)}, ${seam}) forever. Drag the handles to change it.`
+    : 'Loop: no seamless loop was found in this song. Drag the handles to pick a part to repeat.';
 }
 
 // ---- Tabs ---------------------------------------------------------------------------
@@ -263,10 +286,107 @@ for (const id of ['bars', 'thr', 'fade', 'phrase', 'barlock', 'autofade', 'loudn
 function selectLoop(loop: LoopCandidate) {
   const p = player;
   if (!p) return;
-  p.updateSettings({ loop, mode: 'loop' });
-  // Locked stems follow the selected loop.
-  p.locked.forEach((l, i) => { if (l) { p.unlockStem(i); p.lockStem(i, loop); } });
+  p.updateSettings({ mode: 'loop' });
+  p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop);
+  relockStems(loop);
+  syncSectionInputs();
   setMode('loop', false);
+}
+
+/** Locked stems follow the current loop. */
+function relockStems(loop: LoopCandidate) {
+  const p = player;
+  p?.locked.forEach((l, i) => { if (l) { p.unlockStem(i); p.lockStem(i, loop); } });
+}
+
+// ---- Section handles --------------------------------------------------------------------
+
+let stops: number[] = [];
+const secStart = $<HTMLInputElement>('sec-start');
+const secEnd = $<HTMLInputElement>('sec-end');
+
+/** Beat index -> slider value (ms into the song). */
+function beatMs(beat: number): number {
+  const p = player!;
+  return Math.round((p.analysis!.beats[beat] / p.source!.sampleRate) * 1000);
+}
+
+function nearestStop(ms: number): number {
+  let best = 0;
+  stops.forEach((b, k) => { if (Math.abs(beatMs(b) - ms) < Math.abs(beatMs(stops[best]) - ms)) best = k; });
+  return best;
+}
+
+function initSection() {
+  const p = player;
+  if (!p?.analysis) return;
+  stops = p.sectionStops();
+  const max = String(beatMs(stops[stops.length - 1]));
+  secStart.max = secEnd.max = max;
+  syncSectionInputs();
+  show('section');
+}
+
+/** Put the handles where the player's section is (or at the song's ends). */
+function syncSectionInputs() {
+  const p = player;
+  if (!p?.analysis || !stops.length) return;
+  const r = p.currentSettings.range;
+  secStart.value = String(beatMs(r ? r.start : stops[0]));
+  secEnd.value = String(beatMs(r ? r.end : stops[stops.length - 1]));
+  drawSection();
+}
+
+/** Snap both handles to bar lines (at least one bar apart) and return their stop indices. */
+function snapHandles(moved: 'start' | 'end'): [number, number] {
+  let si = nearestStop(Number(secStart.value));
+  let ei = nearestStop(Number(secEnd.value));
+  if (ei <= si) {
+    if (moved === 'start') si = Math.max(0, ei - 1);
+    else ei = Math.min(stops.length - 1, si + 1);
+    if (ei <= si) ei = si + 1;
+  }
+  return [si, ei];
+}
+
+function drawSection(indices?: [number, number]) {
+  const p = player;
+  if (!p?.analysis) return;
+  const [si, ei] = indices ?? [nearestStop(Number(secStart.value)), nearestStop(Number(secEnd.value))];
+  const whole = si === 0 && ei === stops.length - 1;
+  const b = p.analysis.beats, sr = p.source!.sampleRate;
+  const max = Number(secStart.max) || 1;
+  const fill = $('range-fill');
+  fill.style.left = `${(beatMs(stops[si]) / max) * 100}%`;
+  fill.style.width = `${((beatMs(stops[ei]) - beatMs(stops[si])) / max) * 100}%`;
+  viz.setSection(whole ? null : [b[stops[si]], b[stops[ei]]]);
+  const bars = Math.round((stops[ei] - stops[si]) / p.analysis.meter.beatsPerBar);
+  $('sec-label').textContent = whole
+    ? 'Drag the handles to choose the part that plays'
+    : `${fmt(b[stops[si]] / sr)} – ${fmt(b[stops[ei]] / sr)} · ${bars} bar${bars === 1 ? '' : 's'}`;
+  show('sec-reset', !whole);
+}
+
+for (const [input, which] of [[secStart, 'start'], [secEnd, 'end']] as const) {
+  input.addEventListener('input', () => {
+    const [si, ei] = snapHandles(which);
+    drawSection([si, ei]);
+  });
+  input.addEventListener('change', () => applySection(snapHandles(which)));
+}
+$('sec-reset').addEventListener('click', () => applySection([0, stops.length - 1]));
+
+function applySection([si, ei]: [number, number]) {
+  const p = player;
+  if (!p?.analysis) return;
+  const whole = si === 0 && ei === stops.length - 1;
+  p.setSection(whole ? null : { start: stops[si], end: stops[ei] });
+  const loop = p.currentSettings.loop;
+  if (currentMode() === 'loop' && loop) relockStems(loop);
+  syncSectionInputs();
+  refreshGraph();
+  renderLoops();
+  updateModeHint();
 }
 
 function download(blob: Blob, name: string) {
@@ -359,7 +479,9 @@ $('render').addEventListener('click', async () => {
     } else {
       download(encodeWav(channels, sr, { cues }), `${name}.wav`);
     }
-    $('render-note').textContent = realEnd
+    $('render-note').textContent = p.currentSettings.range
+      ? `${fmt(secs)} long, staying inside your section.`
+      : realEnd
       ? exact ? `${fmt(secs)} long, ending on the song's own outro.` : `Couldn't land exactly on the ending, so it's ${fmt(secs)} with a fade-out.`
       : `${fmt(secs)} long with ${cues.length} seams.`;
   } catch (err) {

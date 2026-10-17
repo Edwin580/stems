@@ -1,7 +1,7 @@
 import { rescoreWithPenalty, type Analysis } from '../engine/analyze';
 import { coarseMono, type AudioSource } from '../engine/align';
 import { mixdown } from '../engine/dsp';
-import { findLoops, type LoopCandidate } from '../engine/loops';
+import { findLoops, loopAt, type LoopCandidate } from '../engine/loops';
 import { DEFAULT_SETTINGS, Planner, type PlannerSettings } from '../engine/planner';
 import { bakeLoop, planToLength, renderJumps, type RenderSources } from '../engine/render';
 import { vocalBoundaryPenalty, type Stems } from '../engine/separate';
@@ -232,6 +232,46 @@ export class Player {
 
   get currentSettings(): PlannerSettings { return this.settings; }
 
+  // ---- Section (start/end handles) ------------------------------------------
+
+  /** Beats a section may start or end on: every downbeat, plus the song's first and last beat. */
+  sectionStops(): number[] {
+    const a = this.analysis;
+    if (!a) return [];
+    const n = a.beats.length;
+    const stops = new Set<number>([0, n - 1]);
+    for (const d of this.downbeatIndices()) if (d < n - 1) stops.add(d);
+    return [...stops].sort((x, y) => x - y);
+  }
+
+  private downbeatIndices(): number[] {
+    const a = this.analysis!;
+    const m = a.meter.beatsPerBar;
+    return a.beats.map((_, i) => i).filter((i) => (((i - a.meter.phase) % m) + m) % m === 0);
+  }
+
+  /** A verified loop over exactly this section. */
+  loopFor(range: { start: number; end: number }): LoopCandidate {
+    return loopAt(this.analysis!, this.source!, this.coarse, range.start, range.end, Math.round(this.settings.fadeSec * this.source!.sampleRate), this.settings.autoFade);
+  }
+
+  /**
+   * Keep playback inside beats [start, end), or the whole song (null). Loop
+   * mode loops exactly that section; Endless wanders inside it.
+   */
+  setSection(range: { start: number; end: number } | null, loop?: LoopCandidate) {
+    if (!this.analysis || !this.planner) return;
+    // In Loop mode, "no section" means looping the whole song end to start.
+    const whole = { start: 0, end: this.analysis.beats.length - 1 };
+    const next = loop ?? (this.settings.mode === 'loop' ? this.loopFor(range ?? whole) : this.settings.loop);
+    this.settings = { ...this.settings, range, loop: next };
+    this.planner.update({ range, loop: next });
+    const b = this.analysis.beats;
+    const pos = this.position();
+    if (range && (pos < b[range.start] || pos >= b[range.end] - 0.25 * this.source!.sampleRate)) this.seek(b[range.start]);
+    else this.replan();
+  }
+
   updateSettings(s: Partial<PlannerSettings>) {
     const fadeChanged = (s.fadeSec !== undefined && s.fadeSec !== this.settings.fadeSec) || (s.autoFade !== undefined && s.autoFade !== this.settings.autoFade);
     this.settings = { ...this.settings, ...s };
@@ -429,10 +469,12 @@ export class Player {
     const a = this.analysis!, src = this.source!;
     const offline = new Planner(a, src, this.coarse, { ...this.settings, mode: 'endless' }, 1234);
     const sr = src.sampleRate;
+    // With a section set, the render starts at the section and stays inside it.
+    const start = this.settings.range ? a.beats[this.settings.range.start] : 0;
     let jumps: Jump[];
     let samples: number;
     let exact = false;
-    if (realEnding) {
+    if (realEnding && !this.settings.range) {
       const plan = planToLength(offline, minutes * 60);
       jumps = plan.jumps;
       samples = plan.samples;
@@ -440,8 +482,8 @@ export class Player {
     } else {
       samples = Math.round(minutes * 60 * sr);
       jumps = [];
-      offline.resetFrom(0);
-      let pos = 0, t = 0;
+      offline.resetFrom(start);
+      let pos = start, t = 0;
       for (;;) {
         const j = offline.next();
         if (!j || t + (j.at - pos) > samples) break;
@@ -450,9 +492,9 @@ export class Player {
         pos = j.to;
       }
     }
-    const channels = renderJumps(this.renderSources(), sr, jumps, samples, exact ? 0 : 2);
+    const channels = renderJumps(this.renderSources(), sr, jumps, samples, exact ? 0 : 2, exact ? 0 : start);
     const cues: { frame: number; label: string }[] = [];
-    let pos = 0, t = 0;
+    let pos = exact ? 0 : start, t = 0;
     for (const j of jumps) {
       t += j.at - pos;
       pos = j.to;

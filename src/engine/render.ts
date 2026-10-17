@@ -126,8 +126,9 @@ export function planToLength(planner: Planner, seconds: number): { jumps: Jump[]
 }
 
 /** Render a planned path (from the start of the song) through the stem engine. */
-export function renderJumps(src: RenderSources, sampleRate: number, jumps: Jump[], samples: number, fadeOutSec = 0): Float32Array[] {
+export function renderJumps(src: RenderSources, sampleRate: number, jumps: Jump[], samples: number, fadeOutSec = 0, start = 0): Float32Array[] {
   const eng = new StemEngine(src.groups, src.names, sampleRate);
+  if (start) eng.pos = start;
   src.gains?.forEach((g, i) => eng.setGain(i, g, true));
   eng.setRunning(true);
   for (const j of jumps) eng.enqueue(j);
