@@ -99,17 +99,24 @@ export class Planner {
     if (thrChanged) this.rebuildGraph();
   }
 
-  /** Filter edges by threshold; relax it until a usable infinite core exists. */
+  /**
+   * Filter edges by threshold; relax it until a usable infinite core exists.
+   * "Usable" means a big enough core with about one exit per bar on average:
+   * a core held together by a handful of edges plays as one long fixed cycle.
+   */
   private rebuildGraph() {
     const n = this.a.beats.length;
+    const m = this.a.meter.beatsPerBar;
     let thr = this.s.threshold;
     for (let attempt = 0; attempt < 12; attempt++) {
       const filtered = this.a.edges.map((l) => l.filter((e) => e.cost <= thr));
       const core = infiniteCore(n, filtered);
       let size = 0;
       for (let i = 0; i < n; i++) size += core[i];
-      if (size >= Math.min(n * 0.25, 32) || attempt === 11) {
-        this.edges = pruneToCore(filtered, core);
+      const pruned = pruneToCore(filtered, core);
+      const exits = pruned.reduce((k, l) => k + l.length, 0);
+      if ((size >= Math.min(n * 0.25, 32) && exits >= size / m) || attempt === 11) {
+        this.edges = pruned;
         this.core = core;
         this.coreSize = size;
         this.effectiveThreshold = thr;
