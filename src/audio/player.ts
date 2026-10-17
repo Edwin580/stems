@@ -8,6 +8,7 @@ import { vocalBoundaryPenalty, type Stems } from '../engine/separate';
 import type { Jump } from '../engine/splicer';
 import type { FromAnalysis } from './analysis.worker';
 import * as cache from './cache';
+import { isBackendInitError } from './ort-fallback';
 import type { FromSeparation, ToSeparation } from './separation.worker';
 import type { FromWorklet, ToWorklet } from './worklet';
 import workletUrl from './worklet.ts?worker&url';
@@ -289,7 +290,7 @@ export class Player {
     let stems = method === 'htdemucs' && this.fileHash ? await cache.getStems(this.fileHash, src.sampleRate, method) : null;
     let backend = 'cache';
     if (!stems) {
-      const res = await new Promise<{ stems: Stems; backend: string }>((resolve, reject) => {
+      const runWorker = (wasmOnly: boolean) => new Promise<{ stems: Stems; backend: string }>((resolve, reject) => {
         const w = new Worker(new URL('./separation.worker.ts', import.meta.url), { type: 'module' });
         w.onmessage = (e: MessageEvent<FromSeparation>) => {
           const m = e.data;
@@ -300,9 +301,21 @@ export class Player {
           }
         };
         w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'Separation worker failed')); };
-        const msg: ToSeparation = { method, channels: src.channels, sampleRate: src.sampleRate, modelUrl };
+        const msg: ToSeparation = { method, channels: src.channels, sampleRate: src.sampleRate, modelUrl, ...(wasmOnly ? { wasmOnly: true } : {}) };
         w.postMessage(msg);
       });
+      let res: { stems: Stems; backend: string };
+      try {
+        res = await runWorker(false);
+      } catch (err) {
+        // A failed WebGPU attempt poisons the shared onnxruntime backend
+        // init for the whole worker (see ort-fallback.ts), so the in-worker
+        // WASM fallback is already dead. Retry once in a fresh worker whose
+        // first session attempt is WASM-only; the model comes from cache.
+        if (method !== 'htdemucs' || !isBackendInitError(err instanceof Error ? err.message : String(err))) throw err;
+        this.events.onStemsProgress?.('Backend failed to start — retrying with WASM only', 0);
+        res = await runWorker(true);
+      }
       stems = res.stems;
       backend = res.backend;
       if (method === 'htdemucs' && this.fileHash) void cache.putStems(this.fileHash, src.sampleRate, stems);
