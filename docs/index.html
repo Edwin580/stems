@@ -9,13 +9,13 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
-    <script type="module" crossorigin src="./assets/index-DSz96GFk.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BCNmOJFa.css">
+    <script type="module" crossorigin src="./assets/index-DKOqcNV_.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-B4hLtIHz.css">
   </head>
   <body>
     <header>
       <div class="brand"><span class="logo" aria-hidden="true">∞</span> stems</div>
-      <button id="another" class="hidden">Open file</button>
+      <button id="another" class="hidden">Library</button>
     </header>
 
     <main>
@@ -23,13 +23,33 @@
       <section id="error" class="card error hidden" role="alert"></section>
 
       <section id="home" class="home">
-        <h1>Loop any song without audible seams.</h1>
-        <p class="lede">stems maps a track's beats, bars and repeated sections, then plays it indefinitely by splicing between bars that match. Loop a section, separate the stems, or export a long render.</p>
-        <div id="drop" class="drop">
-          <input id="file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.opus,.aac" hidden />
-          <button id="pick" class="primary big">Open audio file</button>
-          <div class="sub">or drop one here. MP3, M4A, WAV, FLAC or OGG.</div>
+        <button id="now-playing" class="now-playing hidden">
+          <span class="sub">Now playing</span>
+          <b id="now-title"></b>
+          <span class="sub">Back to the player</span>
+        </button>
+        <div id="hero">
+          <h1>Loop any song without audible seams.</h1>
+          <p class="lede">stems maps a track's beats, bars and repeated sections, then plays it indefinitely by splicing between bars that match. Loop a section, separate the stems, or export a long render.</p>
         </div>
+        <div id="drop" class="drop">
+          <input id="file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.opus,.aac" multiple hidden />
+          <button id="pick" class="primary big">Add audio files</button>
+          <div class="sub">or drop them here. MP3, M4A, WAV, FLAC or OGG. Songs are kept in your library on this device.</div>
+        </div>
+        <form id="url-form" class="search url-form">
+          <input id="url" type="url" inputmode="url" placeholder="Or paste a direct link to an audio file" aria-label="Link to an audio file" autocomplete="off" />
+          <button type="submit">Add</button>
+        </form>
+        <div id="url-status" class="sub" role="status"></div>
+
+        <section id="library" class="library hidden" aria-label="Library">
+          <div class="lib-head">
+            <h2>Library <span id="lib-count" class="sub"></span></h2>
+            <input id="lib-q" type="search" placeholder="Search your songs" aria-label="Search your songs" autocomplete="off" />
+          </div>
+          <ol id="lib-list" class="lib"></ol>
+        </section>
         <button id="demo" class="link">Load the demo track</button>
       </section>
 
@@ -57,6 +77,11 @@
               <button id="sec-reset" class="link hidden">Reset to full track</button>
             </div>
           </div>
+
+          <button id="now-line" class="now-line hidden" aria-label="Open lyrics">
+            <span id="now-cur"></span>
+            <span id="now-next"></span>
+          </button>
 
           <div class="transport">
             <button id="play" class="primary round" aria-label="Play" disabled></button>
@@ -130,17 +155,30 @@
         </div>
 
         <div id="panel-lyrics" class="card panel hidden">
-          <form id="lyr-form" class="search">
-            <input id="lyr-q" type="search" placeholder="Title and artist" aria-label="Title and artist" autocomplete="off" />
-            <button class="primary" type="submit">Search</button>
-          </form>
-          <div id="lyr-status" class="sub" role="status"></div>
-          <ol id="lyr-results" class="results"></ol>
-          <div id="lyrics" class="lyrics" aria-live="off"></div>
-          <div class="row-left">
-            <input id="lrc" type="file" accept=".lrc,.txt" hidden />
-            <button id="lrc-pick" class="link">Load an .lrc file</button>
-            <span class="sub">Synced lyrics from LRCLIB.</span>
+          <div id="lyr-find">
+            <form id="lyr-form" class="search">
+              <input id="lyr-q" type="search" placeholder="Title and artist" aria-label="Title and artist" autocomplete="off" />
+              <button class="primary" type="submit">Search</button>
+            </form>
+            <div id="lyr-status" class="sub" role="status"></div>
+            <ol id="lyr-results" class="results"></ol>
+            <div class="row-left">
+              <input id="lrc" type="file" accept=".lrc,.txt" hidden />
+              <button id="lrc-pick" class="link">Load an .lrc file</button>
+              <span class="sub">Synced lyrics from LRCLIB.</span>
+            </div>
+          </div>
+          <div id="lyr-view" class="hidden">
+            <div class="lyr-head">
+              <span id="lyr-source" class="sub"></span>
+              <span class="lyr-timing" title="Shift the lyrics if they run early or late">
+                <button id="lyr-earlier" aria-label="Show lyrics 0.1 s earlier">&minus;</button>
+                <span id="lyr-offset" class="sub">0.0 s</span>
+                <button id="lyr-later" aria-label="Show lyrics 0.1 s later">+</button>
+              </span>
+              <button id="lyr-change" class="link">Change</button>
+            </div>
+            <div id="lyrics" class="lyrics" aria-live="off"></div>
           </div>
         </div>
 
@@ -169,13 +207,14 @@
 
         <div id="panel-tune" class="card panel hidden">
           <label class="ctl">
-            <span>Average distance between jumps <b id="bars-v">8</b> bars</span>
-            <input id="bars" type="range" min="1" max="32" step="1" value="8" />
+            <span>Extra jumps within the cycle <b id="bars-v">about every 16 bars</b></span>
+            <input id="bars" type="range" min="0" max="64" step="4" value="16" />
+            <small>Endless always continues past the end through its wrap seam. These are additional jumps for variety; set to off for a straight cycle.</small>
           </label>
           <label class="ctl">
             <span>Seam threshold <b id="thr-v"></b></span>
             <input id="thr" type="range" min="0.05" max="0.6" step="0.01" value="0.3" />
-            <small>Stricter gives fewer, cleaner jumps. <span id="thr-note"></span></small>
+            <small>Stricter allows fewer, cleaner extra jumps. <span id="thr-note"></span></small>
           </label>
           <label class="ctl">
             <span>Phrase-boundary preference <b id="phrase-v">60%</b></span>
