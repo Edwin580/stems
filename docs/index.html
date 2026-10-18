@@ -9,8 +9,8 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
-    <script type="module" crossorigin src="./assets/index-DKOqcNV_.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-B4hLtIHz.css">
+    <script type="module" crossorigin src="./assets/index-D3XYYOOv.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Cil26g9Y.css">
   </head>
   <body>
     <header>
@@ -30,12 +30,12 @@
         </button>
         <div id="hero">
           <h1>Loop any song without audible seams.</h1>
-          <p class="lede">stems maps a track's beats, bars and repeated sections, then plays it indefinitely by splicing between bars that match. Loop a section, separate the stems, or export a long render.</p>
+          <p class="lede">stems maps a track's beats, bars and repeated sections, then plays it indefinitely by splicing between bars that match. Loop a section, separate the stems, or export a long render. Songs stay in a library on this device.</p>
         </div>
         <div id="drop" class="drop">
           <input id="file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.opus,.aac" multiple hidden />
           <button id="pick" class="primary big">Add audio files</button>
-          <div class="sub">or drop them here. MP3, M4A, WAV, FLAC or OGG. Songs are kept in your library on this device.</div>
+          <div class="sub">or drop them here. MP3, M4A, WAV, FLAC or OGG.</div>
         </div>
         <form id="url-form" class="search url-form">
           <input id="url" type="url" inputmode="url" placeholder="Or paste a direct link to an audio file" aria-label="Link to an audio file" autocomplete="off" />
@@ -89,23 +89,23 @@
               <button data-mode="endless" aria-pressed="true">Endless</button>
               <button data-mode="loop" aria-pressed="false">Loop</button>
             </div>
+            <label class="sleep">
+              <span class="k">Sleep</span>
+              <select id="sleep" aria-label="Sleep timer">
+                <option value="0">Off</option>
+                <option value="15">15m</option>
+                <option value="30">30m</option>
+                <option value="60">60m</option>
+                <option value="90">90m</option>
+              </select>
+            </label>
           </div>
           <p id="mode-hint" class="mode-hint"></p>
           <div class="clock">
             <span><span class="k">Played</span> <span id="listened">0:00</span></span>
             <span><span class="k">Position</span> <span id="posn">0:00</span></span>
             <span><span class="k">Jumps</span> <span id="jumps">0</span></span>
-            <label class="sleep">
-              <span class="k">Sleep</span>
-              <select id="sleep" aria-label="Sleep timer">
-                <option value="0">Off</option>
-                <option value="15">15 min</option>
-                <option value="30">30 min</option>
-                <option value="60">60 min</option>
-                <option value="90">90 min</option>
-              </select>
-              <span id="sleep-left" class="sub"></span>
-            </label>
+            <span id="sleep-left" class="sleep-left"></span>
           </div>
         </div>
 
