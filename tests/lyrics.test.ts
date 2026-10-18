@@ -80,3 +80,16 @@ describe('song identity and lyrics search', () => {
     await expect(searchLyrics('x', 0, busy, 1)).rejects.toThrow(/busy/);
   });
 });
+
+describe('lyric-aware seams', () => {
+  it('penalises beats inside a sung line, not at line starts or before the first line', async () => {
+    const { lyricBoundaryPenalty } = await import('../src/lyrics/loopalign');
+    const sr = 1000;
+    const beats = [0, 1000, 2000, 2500, 3000, 4000, 9000, 15000, 20000].map((x) => x);
+    const lines = [{ time: 2, text: 'a' }, { time: 4, text: 'b' }];
+    const p = Array.from(lyricBoundaryPenalty(lines, beats, sr, 0.3)).map((x) => +x.toFixed(2));
+    // 0 s, 1 s: before the first line. 2 s: line start. 2.5, 3 s: inside line a.
+    // 4 s: line start. 9 s: inside b (b runs at most 8 s). 15 s: in the long gap. 20 s: gap.
+    expect(p).toEqual([0, 0, 0, 0.3, 0.3, 0, 0.3, 0.06, 0.06]);
+  });
+});
