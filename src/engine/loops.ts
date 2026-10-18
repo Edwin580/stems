@@ -32,6 +32,41 @@ export interface LoopSearchOptions {
 }
 
 /**
+ * Verify and refine the loop [startBeat, endBeat): aligns the seam at sample
+ * level and picks its crossfade. Used for found loops and for sections the
+ * person picks by hand.
+ */
+export function loopAt(
+  a: Analysis, src: AudioSource, coarse: Float32Array, startBeat: number, endBeat: number,
+  fade: number, autoFade = true, cost = a.transitions[(endBeat - 1) * a.beats.length + startBeat],
+): LoopCandidate {
+  const at = a.beats[endBeat];
+  // Loops repeat verbatim, so no loudness ramp: the seam must stand on its own.
+  const seam = buildSeam(src, coarse, at, a.beats[startBeat], {
+    fade,
+    autoFade,
+    loudnessMatch: false,
+    periodOut: a.beatPeriods[endBeat - 1],
+    periodIn: a.beatPeriods[Math.max(0, startBeat - 1)],
+  });
+  const total = (Number.isFinite(cost) ? cost : 1) + seam.penalty;
+  return {
+    startBeat,
+    endBeat,
+    startSample: seam.to,
+    endSample: at,
+    cost: total,
+    rho: seam.rho,
+    fade: seam.fade,
+    drift: seam.drift,
+    spectralDb: seam.spectralDb,
+    quality: costToQuality(total),
+    bars: (endBeat - startBeat) / a.meter.beatsPerBar,
+    seconds: (at - seam.to) / src.sampleRate,
+  };
+}
+
+/**
  * Find single-seam loops [startBeat, endBeat) that can repeat forever.
  * Ranks by transition cost with a mild preference for longer loops, applies
  * non-maximum suppression, then verifies each seam at sample level.
@@ -59,33 +94,7 @@ export function findLoops(a: Analysis, src: AudioSource, coarse: Float32Array, o
     picked.push(r);
     if (picked.length >= opts.maxCandidates * 2) break;
   }
-  const out: LoopCandidate[] = picked.map((p) => {
-    const at = a.beats[p.e];
-    // Loops repeat verbatim, so no loudness ramp: the seam must stand on its own.
-    const seam = buildSeam(src, coarse, at, a.beats[p.s], {
-      fade: opts.fade,
-      autoFade: opts.autoFade ?? true,
-      loudnessMatch: false,
-      periodOut: a.beatPeriods[p.e - 1],
-      periodIn: a.beatPeriods[Math.max(0, p.s - 1)],
-    });
-    const cost = p.cost + seam.penalty;
-    const al = seam;
-    return {
-      startBeat: p.s,
-      endBeat: p.e,
-      startSample: al.to,
-      endSample: at,
-      cost,
-      rho: al.rho,
-      fade: seam.fade,
-      drift: seam.drift,
-      spectralDb: seam.spectralDb,
-      quality: costToQuality(cost),
-      bars: (p.e - p.s) / m,
-      seconds: (at - al.to) / src.sampleRate,
-    };
-  });
+  const out = picked.map((p) => loopAt(a, src, coarse, p.s, p.e, opts.fade, opts.autoFade ?? true, p.cost));
   out.sort((x, y) => (x.cost - opts.lengthBias * Math.log2(x.seconds)) - (y.cost - opts.lengthBias * Math.log2(y.seconds)));
   return out.slice(0, opts.maxCandidates);
 }

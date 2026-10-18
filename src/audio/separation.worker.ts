@@ -1,5 +1,6 @@
 import { separateHtdemucs, SEGMENT, type DemucsRunner } from '../engine/htdemucs';
-import { separateDsp, type Stems } from '../engine/separate';
+import { separateDsp, vocalBoundaryPenalty, type Stems } from '../engine/separate';
+import { putStems } from './cache';
 
 export type ToSeparation = {
   method: 'dsp' | 'htdemucs';
@@ -12,10 +13,14 @@ export type ToSeparation = {
    * init (see ort-fallback.ts), so the retry must not repeat it.
    */
   wasmOnly?: boolean;
+  /** Beat positions, when analysis is done: the vocal seam penalty is computed here. */
+  beats?: number[];
+  /** File hash: HTDemucs results are cached in IndexedDB from here. */
+  hash?: string;
 };
 export type FromSeparation =
   | { type: 'progress'; stage: string; fraction: number }
-  | { type: 'done'; stems: Stems; backend: string }
+  | { type: 'done'; stems: Stems; backend: string; vocalPenalty?: Float32Array }
   | { type: 'error'; message: string };
 
 const post = (m: FromSeparation, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
@@ -52,7 +57,7 @@ async function loadModel(url: string): Promise<ArrayBuffer> {
 
 async function htdemucsRunner(modelUrl: string, wasmOnly = false): Promise<{ runner: DemucsRunner; backend: string }> {
   const ort = await import('onnxruntime-web/webgpu');
-  ort.env.wasm.numThreads = (self as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
+  ort.env.wasm.numThreads = (self as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1)) : 1; // leave a core for the audio thread
   const model = await loadModel(modelUrl);
   post({ type: 'progress', stage: 'Starting model', fraction: 0 });
   let session: Awaited<ReturnType<typeof ort.InferenceSession.create>> | null = null;
@@ -81,7 +86,7 @@ async function htdemucsRunner(modelUrl: string, wasmOnly = false): Promise<{ run
       // only report "previous call to 'initWasm()' failed". The caller
       // retries in a fresh worker with wasmOnly set (see ort-fallback.ts).
       session = null;
-      post({ type: 'progress', stage: `WebGPU start failed (${err instanceof Error ? err.message : String(err)}) — trying WASM`, fraction: 0 });
+      post({ type: 'progress', stage: `WebGPU start failed (${err instanceof Error ? err.message : String(err)}); trying WASM`, fraction: 0 });
     }
   }
   session ??= await ort.InferenceSession.create(model, { executionProviders: ['wasm'] });
@@ -103,7 +108,7 @@ async function htdemucsRunner(modelUrl: string, wasmOnly = false): Promise<{ run
 }
 
 self.onmessage = async (e: MessageEvent<ToSeparation>) => {
-  const { method, channels, sampleRate, modelUrl, wasmOnly } = e.data;
+  const { method, channels, sampleRate, modelUrl, wasmOnly, beats, hash } = e.data;
   try {
     let stems: Stems;
     let backend = 'js';
@@ -115,7 +120,20 @@ self.onmessage = async (e: MessageEvent<ToSeparation>) => {
     } else {
       stems = separateDsp(channels, sampleRate, (f) => post({ type: 'progress', stage: 'Separating (DSP)', fraction: f }));
     }
-    post({ type: 'done', stems, backend }, stems.channels.flat().map((c) => c.buffer));
+    // Everything heavy happens here rather than on the page's main thread,
+    // where it would freeze the UI for a second or more on a phone.
+    post({ type: 'progress', stage: 'Finishing', fraction: 1 });
+    if (method === 'htdemucs' && hash) await putStems(hash, sampleRate, stems).catch(() => {});
+    const vi = stems.names.indexOf('vocals');
+    const vocalPenalty = beats && stems.hasVocals && vi >= 0 ? vocalBoundaryPenalty(stems.channels[vi], channels, beats, sampleRate) : undefined;
+    if ((self as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated) {
+      // Shared memory: the page and the audio worklet read these directly, no copies.
+      const shared = (x: Float32Array) => { const y = new Float32Array(new SharedArrayBuffer(x.byteLength)); y.set(x); return y; };
+      stems = { ...stems, channels: stems.channels.map((g) => g.map(shared)) };
+      post({ type: 'done', stems, backend, vocalPenalty });
+    } else {
+      post({ type: 'done', stems, backend, vocalPenalty }, stems.channels.flat().map((c) => c.buffer as ArrayBuffer));
+    }
   } catch (err) {
     post({ type: 'error', message: err instanceof Error ? err.message : String(err) });
   }

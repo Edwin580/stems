@@ -3,7 +3,7 @@ import { FFT } from '../src/engine/fft';
 import { mixdown } from '../src/engine/dsp';
 import { analyze, type Analysis } from '../src/engine/analyze';
 import { coarseMono, type AudioSource } from '../src/engine/align';
-import { findLoops } from '../src/engine/loops';
+import { findLoops, loopAt } from '../src/engine/loops';
 import { infiniteCore } from '../src/engine/graph';
 import { DEFAULT_SETTINGS, Planner } from '../src/engine/planner';
 import { crossfadeGains, Splicer } from '../src/engine/splicer';
@@ -117,6 +117,27 @@ describe.each([
     expect(e).toBeGreaterThan(1);
     // Clicks: no sample step bigger than the source's own largest step.
     expect(maxStep(out[0])).toBeLessThanOrEqual(maxStep(song.channels[0]) * 1.05);
+  });
+
+  it('keeps Endless inside a chosen section and wraps from its end to its start', () => {
+    const m = a.meter.beatsPerBar;
+    const start = m * 2 + a.meter.phase, end = start + m * 8;
+    const planner = new Planner(a, src, coarse, { ...DEFAULT_SETTINGS, barsBetweenJumps: 2, range: { start, end } }, 3);
+    planner.resetFrom(0);
+    let wraps = 0;
+    for (let k = 0; k < 40; k++) {
+      const j = planner.next()!;
+      expect(j.fromBeat! + 1).toBeLessThanOrEqual(end);
+      expect(j.toBeat!).toBeGreaterThanOrEqual(start);
+      expect(j.toBeat!).toBeLessThan(end);
+      if (j.fromBeat === end - 1 && j.toBeat === start) wraps++;
+    }
+    expect(wraps).toBeGreaterThan(0);
+    // A hand-picked section as a loop: verified seam on exactly those beats.
+    const loop = loopAt(a, src, coarse, start, end, 2646);
+    expect([loop.startBeat, loop.endBeat, loop.bars]).toEqual([start, end, 8]);
+    expect(loop.endSample).toBe(a.beats[end]);
+    expect(Math.abs(loop.startSample - a.beats[start])).toBeLessThan(0.05 * song.sampleRate);
   });
 
   it('jumps happen and land where the planner said', () => {

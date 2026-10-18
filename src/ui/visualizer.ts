@@ -21,6 +21,7 @@ export class Visualizer {
   private core = new Uint8Array(0);
   private loop: LoopCandidate | null = null;
   private flash: { jump: Jump; at: number } | null = null;
+  private section: [number, number] | null = null;
   private dpr = 1;
   onSeek: (sample: number) => void = () => {};
 
@@ -73,6 +74,9 @@ export class Visualizer {
   }
 
   flashJump(jump: Jump) { this.flash = { jump, at: performance.now() }; }
+
+  /** Shade everything outside [start, end) samples (null = whole song). */
+  setSection(section: [number, number] | null) { this.section = section; }
 
   private resize() {
     this.dpr = window.devicePixelRatio || 1;
@@ -168,6 +172,17 @@ export class Visualizer {
       return;
     }
     const maxH = H * 0.45;
+    if (this.section) {
+      g.fillStyle = css('--card');
+      g.globalAlpha = 0.7;
+      const x1 = this.x(this.section[0]), x2 = this.x(this.section[1]);
+      g.fillRect(0, 0, x1, H);
+      g.fillRect(x2, 0, W - x2, H);
+      g.globalAlpha = 1;
+      g.fillStyle = css('--accent');
+      g.fillRect(Math.round(x1) - this.dpr, 0, 2 * this.dpr, H);
+      g.fillRect(Math.round(x2) - this.dpr, 0, 2 * this.dpr, H);
+    }
     // Next planned jump.
     const next = queue[0];
     if (next) {
