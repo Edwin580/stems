@@ -71,6 +71,7 @@ if (pendingShare) {
 async function ensurePlayer(): Promise<Player> {
   if (player) return player;
   player = await Player.create();
+  player.seamless = $<HTMLInputElement>('seamless').checked;
   player.events = {
     onProgress: (stage, f) => setProgress(friendlyStage(stage), f),
     onAnalysis: (fromCache) => onAnalysed(fromCache),
@@ -178,6 +179,7 @@ function resetSongUi() {
   lyricOffset = 0;
   $('lyr-offset').textContent = '0.0 s';
   sectionFromHandles = false;
+  sectionSeam = null;
   $('lyrics').innerHTML = '';
   $('lyr-results').innerHTML = '';
   $('lyr-status').textContent = '';
@@ -255,15 +257,17 @@ function setMode(mode: 'endless' | 'loop', apply = true) {
     p.updateSettings({ mode });
     if (mode === 'endless' && p.analysis && p.currentSettings.range && !sectionFromHandles) {
       p.setSection(null);
+      sectionSeam = null;
       syncSectionInputs();
     }
     if (mode === 'loop' && p.analysis) {
       // Loop mode always shows its loop on the handles: the section if one is
       // set, otherwise the best loop found.
       const r = p.currentSettings.range;
-      const loop = r ? p.loopFor(r) : p.currentSettings.loop ?? p.loops[0];
+      // A set section was already snapped when it was chosen: loop it exactly.
+      const loop = r ? p.loopFor(r, false) : p.currentSettings.loop ?? p.loops[0];
       if (loop) {
-        p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop);
+        sectionSeam = p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop)?.quality ?? null;
         relockStems(loop);
       }
       syncSectionInputs();
@@ -364,7 +368,7 @@ function selectLoop(loop: LoopCandidate) {
   if (!p) return;
   sectionFromHandles = false;
   p.updateSettings({ mode: 'loop' });
-  p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop);
+  sectionSeam = p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop)?.quality ?? null;
   relockStems(loop);
   syncSectionInputs();
   setMode('loop', false);
@@ -439,18 +443,24 @@ function snapHandles(moved: 'start' | 'end'): [number, number] {
 function drawSection(indices?: [number, number]) {
   const p = player;
   if (!p?.analysis) return;
-  const [si, ei] = indices ?? [nearestStop(Number(secStart.value)), nearestStop(Number(secEnd.value))];
-  const whole = si === 0 && ei === stops.length - 1;
+  // While dragging: the stops under the handles. Otherwise: the player's (possibly snapped) section.
+  const r = indices ? null : p.currentSettings.range;
+  const [s, e] = r ? [r.start, r.end] : (() => {
+    const [si, ei] = indices ?? [nearestStop(Number(secStart.value)), nearestStop(Number(secEnd.value))];
+    return [stops[si], stops[ei]];
+  })();
+  const whole = s === stops[0] && e === stops[stops.length - 1];
   const b = p.analysis.beats, sr = p.source!.sampleRate;
   const max = Number(secStart.max) || 1;
   const fill = $('range-fill');
-  fill.style.left = `${(beatMs(stops[si]) / max) * 100}%`;
-  fill.style.width = `${((beatMs(stops[ei]) - beatMs(stops[si])) / max) * 100}%`;
-  viz.setSection(whole ? null : [b[stops[si]], b[stops[ei]]]);
-  const bars = Math.round((stops[ei] - stops[si]) / p.analysis.meter.beatsPerBar);
+  fill.style.left = `${(beatMs(s) / max) * 100}%`;
+  fill.style.width = `${((beatMs(e) - beatMs(s)) / max) * 100}%`;
+  viz.setSection(whole ? null : [b[s], b[e]]);
+  const bars = Math.round((e - s) / p.analysis.meter.beatsPerBar);
+  const seam = !indices && sectionSeam !== null ? `, seam ${sectionSeam}%` : '';
   $('sec-label').textContent = whole
     ? 'Full track'
-    : `${fmt(b[stops[si]] / sr)}-${fmt(b[stops[ei]] / sr)}, ${bars} bar${bars === 1 ? '' : 's'}`;
+    : `${fmt(b[s] / sr)}-${fmt(b[e] / sr)}, ${bars} bar${bars === 1 ? '' : 's'}${seam}`;
   show('sec-reset', !whole);
 }
 
@@ -463,12 +473,24 @@ for (const [input, which] of [[secStart, 'start'], [secEnd, 'end']] as const) {
 }
 $('sec-reset').addEventListener('click', () => applySection([0, stops.length - 1]));
 
+const seamlessBox = $<HTMLInputElement>('seamless');
+try { seamlessBox.checked = localStorage.getItem('stems.seamless') !== '0'; } catch { /* default on */ }
+seamlessBox.addEventListener('change', () => {
+  try { localStorage.setItem('stems.seamless', seamlessBox.checked ? '1' : '0'); } catch { /* ignore */ }
+  if (player) player.seamless = seamlessBox.checked;
+  const r = player?.currentSettings.range;
+  if (r && sectionFromHandles) applySection(snapHandles('end'));
+});
+
+/** Match quality of the hand-picked section's seam, shown next to its range. */
+let sectionSeam: number | null = null;
+
 function applySection([si, ei]: [number, number]) {
   const p = player;
   if (!p?.analysis) return;
   const whole = si === 0 && ei === stops.length - 1;
   sectionFromHandles = !whole;
-  p.setSection(whole ? null : { start: stops[si], end: stops[ei] });
+  sectionSeam = p.setSection(whole ? null : { start: stops[si], end: stops[ei] })?.quality ?? null;
   const loop = p.currentSettings.loop;
   if (currentMode() === 'loop' && loop) relockStems(loop);
   syncSectionInputs();

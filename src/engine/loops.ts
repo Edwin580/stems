@@ -67,6 +67,39 @@ export function loopAt(
 }
 
 /**
+ * The cleanest loop near [start, end): each end may move by whole bars (up
+ * to `radiusBars`, so the phrasing stays put) to where the seam matches
+ * best. The closest candidates are preferred when seams are about equal.
+ */
+export function snapLoop(
+  a: Analysis, src: AudioSource, coarse: Float32Array, start: number, end: number,
+  fade: number, autoFade = true, radiusBars = 4,
+): LoopCandidate {
+  const n = a.beats.length, m = a.meter.beatsPerBar, T = a.transitions;
+  const moveCost = 0.015;
+  const cands: { s: number; e: number; key: number }[] = [];
+  for (let ds = -radiusBars; ds <= radiusBars; ds++) {
+    for (let de = -radiusBars; de <= radiusBars; de++) {
+      const s = start + ds * m, e = end + de * m;
+      if (s < 0 || e > n - 1 || e - s < 2 * m) continue;
+      const c = T[(e - 1) * n + s];
+      if (!Number.isFinite(c)) continue;
+      cands.push({ s, e, key: c + moveCost * (Math.abs(ds) + Math.abs(de)) });
+    }
+  }
+  cands.sort((x, y) => x.key - y.key);
+  const verify = cands.slice(0, 10);
+  if (!verify.some((c) => c.s === start && c.e === end) && end - start >= 1) verify.push({ s: start, e: end, key: 0 });
+  let best: LoopCandidate | null = null, bestScore = Infinity;
+  for (const c of verify) {
+    const l = loopAt(a, src, coarse, c.s, c.e, fade, autoFade);
+    const score = l.cost + moveCost * ((Math.abs(c.s - start) + Math.abs(c.e - end)) / m);
+    if (score < bestScore) { best = l; bestScore = score; }
+  }
+  return best ?? loopAt(a, src, coarse, start, end, fade, autoFade);
+}
+
+/**
  * Find single-seam loops [startBeat, endBeat) that can repeat forever.
  * Ranks by transition cost with a mild preference for longer loops, applies
  * non-maximum suppression, then verifies each seam at sample level.

@@ -120,7 +120,7 @@ export function directAudioUrl(input: string): string {
 }
 
 /** Download an audio file from a link, with progress. Throws a readable error. */
-export async function fetchAudioFile(input: string, onProgress?: (f: number) => void, fetchFn: typeof fetch = fetch): Promise<File> {
+export async function fetchAudioFile(input: string, onProgress?: (f: number) => void, fetchFn: typeof fetch = fetch, nameHint?: string): Promise<File> {
   let url: string;
   try { url = directAudioUrl(input); } catch { throw new Error('That is not a valid link.'); }
   let res: Response;
@@ -149,7 +149,7 @@ export async function fetchAudioFile(input: string, onProgress?: (f: number) => 
   }
   const fromPath = decodeURIComponent(new URL(res.url || url).pathname.split('/').pop() || '') || 'audio';
   const disposition = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(res.headers.get('content-disposition') ?? '')?.[1];
-  const name = disposition ? decodeURIComponent(disposition) : fromPath;
+  const name = nameHint ?? (disposition ? decodeURIComponent(disposition) : fromPath);
   return new File(parts as BlobPart[], name, { type: type.split(';')[0] || 'audio/mpeg' });
 }
 

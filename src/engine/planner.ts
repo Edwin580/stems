@@ -46,14 +46,17 @@ export interface PlannerSettings {
   range: { start: number; end: number } | null;
 }
 
+/** The automatic wrap per analysis (it only depends on the audio and the fade). */
+const wrapMemo = new WeakMap<Analysis, Map<string, { start: number; end: number } | null>>();
+
 export const DEFAULT_SETTINGS: PlannerSettings = {
   mode: 'endless',
   threshold: 0.3,
   barsBetweenJumps: 16,
   barLock: true,
   fadeSec: 0.06,
-  minRho: 0.45,
-  maxSpectralDb: 6,
+  minRho: 0.6,
+  maxSpectralDb: 4.5,
   autoFade: true,
   loudnessMatch: true,
   phraseBias: 0.6,
@@ -170,6 +173,14 @@ export class Planner {
    * sample level (waveform correlation, spectral step).
    */
   private autoSection(): { start: number; end: number } | null {
+    const key = `${this.fade}|${this.s.autoFade}`;
+    let memo = wrapMemo.get(this.a);
+    if (!memo) wrapMemo.set(this.a, (memo = new Map()));
+    if (!memo.has(key)) memo.set(key, this.findWrap());
+    return memo.get(key)!;
+  }
+
+  private findWrap(): { start: number; end: number } | null {
     const a = this.a, n = a.beats.length, T = a.transitions;
     const m = a.meter.beatsPerBar;
     const down = (i: number) => (((i - a.meter.phase) % m) + m) % m === 0;
@@ -188,10 +199,12 @@ export class Planner {
     if (!cands.length) return null;
     cands.sort((x, y) => x.key - y.key);
     let best: { from: number; to: number; score: number } | null = null;
-    for (const c of cands.slice(0, 12)) {
+    // The wrap is heard on every cycle: check many candidates and weigh the
+    // sample-level match heavily.
+    for (const c of cands.slice(0, 40)) {
       const j = this.makeJump(c.from, c.to);
       this.nextId--; // probe only
-      const score = c.key + (1 - Math.max(0, j.rho)) * 0.5 + Math.max(0, j.spectralDb - 3) * 0.03;
+      const score = c.key + (1 - Math.max(0, j.rho)) * 1.2 + Math.max(0, j.spectralDb - 2.5) * 0.06;
       if (!best || score < best.score) best = { from: c.from, to: c.to, score };
     }
     return best ? { start: best.to, end: best.from + 1 } : null;
