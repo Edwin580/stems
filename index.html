@@ -69,7 +69,13 @@
             <div class="bar"><div id="bar-fill"></div></div>
           </div>
 
-          <canvas id="viz" aria-label="Song map with waveform, beat grid and jump arcs. Click to seek."></canvas>
+          <div class="viz-wrap">
+            <canvas id="viz" aria-label="Song map with beats and jump branches. Tap to seek."></canvas>
+            <div class="seg small viz-layout" role="group" aria-label="Song map layout">
+              <button data-layout="wave" aria-pressed="true">Wave</button>
+              <button data-layout="circle" aria-pressed="false">Circle</button>
+            </div>
+          </div>
           <div id="section" class="section hidden">
             <div class="range">
               <div class="range-track"><div id="range-fill" class="range-fill"></div></div>
@@ -106,6 +112,13 @@
                 <option value="90">90m</option>
               </select>
             </label>
+          </div>
+          <div id="style-row" class="style-row">
+            <span class="k">Style</span>
+            <div class="seg small" role="group" aria-label="Endless style">
+              <button data-style="smooth" aria-pressed="true">Smooth</button>
+              <button data-style="jumpy" aria-pressed="false">Jumpy</button>
+            </div>
           </div>
           <p id="mode-hint" class="mode-hint"></p>
           <div class="clock">

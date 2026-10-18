@@ -149,6 +149,24 @@ describe.each([
     expect(tail.toBeat!).toBeLessThan(sec.end);
   });
 
+  it('Jumpy style jumps often, between matching beats of the bar, and never past the wrap', () => {
+    const m = a.meter.beatsPerBar;
+    const planner = new Planner(a, src, coarse, { ...DEFAULT_SETTINGS, style: 'jumpy' }, 9);
+    const sec = planner.section!;
+    planner.resetFrom(0);
+    let beats = 0, jumps = 0, at = 0;
+    for (let k = 0; k < 60; k++) {
+      const j = planner.next()!;
+      beats += j.fromBeat! + 1 - at;
+      at = j.toBeat!;
+      jumps++;
+      expect(j.fromBeat! + 1).toBeLessThanOrEqual(sec.end);
+      if (!(j.fromBeat === sec.end - 1 && j.toBeat === sec.start)) expect((((j.toBeat! - (j.fromBeat! + 1)) % m) + m) % m).toBe(0);
+    }
+    // Far more often than Smooth's ~16 bars.
+    expect(beats / jumps).toBeLessThan(8 * m);
+  });
+
   it('keeps Endless inside a chosen section and wraps from its end to its start', () => {
     const m = a.meter.beatsPerBar;
     const start = m * 2 + a.meter.phase, end = start + m * 8;

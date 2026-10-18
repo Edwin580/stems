@@ -6,7 +6,9 @@ import type { Jump } from '../engine/splicer';
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 /**
- * Linear song map: waveform, beat grid, jump arcs above, playhead. Static
+ * Song map in two layouts. Wave: waveform, beat grid, jump arcs above,
+ * playhead. Circle (Infinite Jukebox style): beats around a ring, each a
+ * tick sized by loudness, branches as curves through the middle. Static
  * content is cached in an offscreen canvas; only the playhead and live arcs
  * are redrawn each frame.
  */
@@ -23,6 +25,7 @@ export class Visualizer {
   private flash: { jump: Jump; at: number } | null = null;
   private section: [number, number] | null = null;
   private dpr = 1;
+  private layout: 'wave' | 'circle' = 'wave';
   onSeek: (sample: number) => void = () => {};
 
   constructor(canvas: HTMLCanvasElement) {
@@ -32,7 +35,11 @@ export class Visualizer {
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => this.drawStatic());
     canvas.addEventListener('click', (e) => {
       const r = canvas.getBoundingClientRect();
-      const frac = (e.clientX - r.left) / r.width;
+      let frac = (e.clientX - r.left) / r.width;
+      if (this.layout === 'circle') {
+        const dx = e.clientX - r.left - r.width / 2, dy = e.clientY - r.top - r.height / 2;
+        frac = (((Math.atan2(dy, dx) + Math.PI / 2) / (2 * Math.PI)) % 1 + 1) % 1;
+      }
       const s = frac * this.length;
       if (!this.analysis) { this.onSeek(s); return; }
       // Snap to the nearest beat so seeks land on the grid.
@@ -75,6 +82,37 @@ export class Visualizer {
 
   flashJump(jump: Jump) { this.flash = { jump, at: performance.now() }; }
 
+  get mode(): 'wave' | 'circle' { return this.layout; }
+  setLayout(layout: 'wave' | 'circle') {
+    this.layout = layout;
+    this.canvas.classList.toggle('circle', layout === 'circle');
+    this.resize();
+  }
+
+  // ---- Circle geometry ----
+  private get cx() { return this.canvas.width / 2; }
+  private get cy() { return this.canvas.height / 2; }
+  private get radius() { return Math.max(1, Math.min(this.canvas.width, this.canvas.height) / 2 - 22 * this.dpr); }
+  private angle(sample: number) { return -Math.PI / 2 + (2 * Math.PI * sample) / this.length; }
+  private ring(sample: number, r = this.radius): [number, number] {
+    const t = this.angle(sample);
+    return [this.cx + r * Math.cos(t), this.cy + r * Math.sin(t)];
+  }
+
+  /** A jump drawn in the current layout: arc above the waveform, or a curve through the ring. */
+  private jumpPath(g: CanvasRenderingContext2D, from: number, to: number, maxH: number) {
+    if (this.layout === 'wave') { this.arc(g, from, to, maxH); return; }
+    const [x1, y1] = this.ring(from, this.radius - 10 * this.dpr), [x2, y2] = this.ring(to, this.radius - 10 * this.dpr);
+    // Short hops bow slightly inward; long ones pass near the centre.
+    const span = Math.abs(from - to) / this.length;
+    const pull = 0.15 + 0.85 * Math.min(1, span * 2);
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    g.beginPath();
+    g.moveTo(x1, y1);
+    g.quadraticCurveTo(mx + (this.cx - mx) * pull, my + (this.cy - my) * pull, x2, y2);
+    g.stroke();
+  }
+
   /** Shade everything outside [start, end) samples (null = whole song). */
   setSection(section: [number, number] | null) { this.section = section; }
 
@@ -100,6 +138,7 @@ export class Visualizer {
   }
 
   private drawStatic() {
+    if (this.layout === 'circle') { this.drawCircleStatic(); return; }
     const g = this.layer.getContext('2d')!;
     const W = this.layer.width, H = this.layer.height;
     g.clearRect(0, 0, W, H);
@@ -160,6 +199,54 @@ export class Visualizer {
     }
   }
 
+  private drawCircleStatic() {
+    const g = this.layer.getContext('2d')!;
+    const W = this.layer.width, H = this.layer.height;
+    g.clearRect(0, 0, W, H);
+    const R = this.radius, d = this.dpr;
+    const dim = css('--muted-wave'), bright = css('--wave');
+    const peakAt = (s: number) => this.peaks[Math.min(this.peaks.length - 1, Math.floor((s / this.length) * this.peaks.length))] ?? 0;
+    const a = this.analysis;
+    if (this.loop) {
+      g.strokeStyle = css('--loop-bg');
+      g.lineWidth = 28 * d;
+      g.beginPath();
+      g.arc(this.cx, this.cy, R, this.angle(this.loop.startSample), this.angle(this.loop.endSample));
+      g.stroke();
+    }
+    // Ticks: one per beat (or per waveform bucket before analysis), length by loudness.
+    const marks = a ? a.beats : Array.from({ length: 360 }, (_, k) => (k / 360) * this.length);
+    const coreFirst = this.core.indexOf(1), coreLast = this.core.lastIndexOf(1);
+    const m = a?.meter.beatsPerBar ?? 4;
+    marks.forEach((s, i) => {
+      const inCore = !a || coreFirst < 0 || (i >= coreFirst && i <= coreLast);
+      const down = a ? (((i - a.meter.phase) % m) + m) % m === 0 : false;
+      const len = (3 + 13 * peakAt(s)) * d;
+      const [x1, y1] = this.ring(s, R - len / 2), [x2, y2] = this.ring(s, R + len / 2);
+      g.strokeStyle = inCore ? bright : dim;
+      g.globalAlpha = a ? (down ? 1 : 0.7) : 0.6;
+      g.lineWidth = (down ? 2 : 1.2) * d;
+      g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    });
+    g.globalAlpha = 1;
+    if (!a) return;
+    // Branches, best on top.
+    const all = this.edges.flat().sort((p, q) => q.cost - p.cost);
+    g.lineWidth = d;
+    g.strokeStyle = css('--arc');
+    for (const e of all.slice(-900)) {
+      const q = Math.max(0, Math.min(1, 1 - e.cost / 0.6));
+      g.globalAlpha = 0.06 + 0.3 * q * q;
+      this.jumpPath(g, a.beats[e.from + 1], a.beats[e.to], 0);
+    }
+    g.globalAlpha = 1;
+    if (this.loop) {
+      g.strokeStyle = css('--accent');
+      g.lineWidth = 2.5 * d;
+      this.jumpPath(g, this.loop.endSample, this.loop.startSample, 0);
+    }
+  }
+
   /** Per-frame draw: static layer + upcoming jumps + playhead. */
   draw(position: number, queue: readonly Jump[], lockedHeads: { pos: number; label: string }[] = []) {
     const g = this.ctx;
@@ -172,6 +259,7 @@ export class Visualizer {
       return;
     }
     const maxH = H * 0.45;
+    if (this.layout === 'circle') { this.drawCircleLive(position, queue); return; }
     if (this.section) {
       g.fillStyle = css('--bg');
       g.globalAlpha = 0.7;
@@ -215,5 +303,51 @@ export class Visualizer {
     const x = this.x(position);
     g.fillStyle = css('--playhead');
     g.fillRect(Math.round(x) - this.dpr, 0, 2 * this.dpr, H);
+  }
+
+  private drawCircleLive(position: number, queue: readonly Jump[]) {
+    const g = this.ctx, d = this.dpr, R = this.radius;
+    if (this.section) {
+      // Dim the ring outside the section, mark its ends.
+      g.strokeStyle = css('--bg');
+      g.globalAlpha = 0.75;
+      g.lineWidth = 34 * d;
+      g.beginPath();
+      g.arc(this.cx, this.cy, R, this.angle(this.section[1]), this.angle(this.section[0]) + 2 * Math.PI);
+      g.stroke();
+      g.globalAlpha = 1;
+      g.strokeStyle = css('--accent');
+      g.lineWidth = 2 * d;
+      for (const s of this.section) {
+        const [x1, y1] = this.ring(s, R - 16 * d), [x2, y2] = this.ring(s, R + 16 * d);
+        g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+      }
+    }
+    const next = queue[0];
+    if (next) {
+      g.strokeStyle = css('--accent');
+      g.lineWidth = 2 * d;
+      g.setLineDash([6 * d, 4 * d]);
+      this.jumpPath(g, next.at, next.to, 0);
+      g.setLineDash([]);
+    }
+    if (this.flash) {
+      const t = (performance.now() - this.flash.at) / 900;
+      if (t >= 1) this.flash = null;
+      else {
+        g.strokeStyle = css('--accent');
+        g.globalAlpha = 1 - t;
+        g.lineWidth = (2 + 4 * (1 - t)) * d;
+        this.jumpPath(g, this.flash.jump.at, this.flash.jump.to, 0);
+        g.globalAlpha = 1;
+      }
+    }
+    // Playhead: a ring on the current beat.
+    const [px, py] = this.ring(position);
+    g.strokeStyle = css('--playhead');
+    g.lineWidth = 2.5 * d;
+    g.beginPath(); g.arc(px, py, 9 * d, 0, 2 * Math.PI); g.stroke();
+    g.fillStyle = css('--accent');
+    g.beginPath(); g.arc(px, py, 3.5 * d, 0, 2 * Math.PI); g.fill();
   }
 }

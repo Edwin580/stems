@@ -4,7 +4,7 @@
  * the SHA-256 of its bytes (the same key the analysis cache uses, so a
  * reopened song also skips analysis).
  */
-import { songInfo } from '../lyrics/search';
+import { songInfo, type SongInfo } from '../lyrics/search';
 import { hashBytes } from './cache';
 
 export interface LibrarySong {
@@ -53,14 +53,14 @@ export function persist(): void {
  * Add a file (no-op if the same audio is already there); returns its entry
  * and whether this call stored it.
  */
-export async function addSong(file: File): Promise<LibrarySong & { isNew: boolean }> {
+export async function addSong(file: File, known?: SongInfo): Promise<LibrarySong & { isNew: boolean }> {
   const id = await hashBytes(await file.arrayBuffer());
   const existing = await run<Stored>('readonly', (s) => s.get(id));
   if (existing) {
     const { blob: _b, ...meta } = existing;
     return { ...meta, isNew: false };
   }
-  const info = await songInfo(file);
+  const info = known ?? await songInfo(file);
   const entry: Stored = {
     id, name: file.name, title: info.title, artist: info.artist, type: file.type, size: file.size,
     duration: 0, addedAt: Date.now(), playedAt: 0, blob: file,

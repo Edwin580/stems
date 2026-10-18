@@ -32,8 +32,11 @@ export async function searchTracks(query: string, fetchFn: typeof fetch = fetch)
   const res = await fetchFn(`${API}/tracks/search?query=${encodeURIComponent(q)}&app_name=${APP}`);
   if (!res.ok) throw new Error(`Music search failed (HTTP ${res.status}).`);
   const { data } = (await res.json()) as { data?: AudiusTrack[] };
+  // Songs before hour-long mixes: they analyse faster and loop better.
+  const long = (t: AudiusTrack) => Number((t.duration ?? 0) > 12 * 60);
   return (data ?? [])
     .filter((t) => t.is_streamable !== false && !t.is_delete)
+    .sort((x, y) => long(x) - long(y))
     .slice(0, 20)
     .map((t) => ({
       id: t.id,
