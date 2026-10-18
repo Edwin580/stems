@@ -57,6 +57,11 @@
             </div>
           </div>
 
+          <button id="now-line" class="now-line hidden" aria-label="Open lyrics">
+            <span id="now-cur"></span>
+            <span id="now-next"></span>
+          </button>
+
           <div class="transport">
             <button id="play" class="primary round" aria-label="Play" disabled></button>
             <div class="seg" role="group" aria-label="Playback mode">
@@ -129,23 +134,30 @@
         </div>
 
         <div id="panel-lyrics" class="card panel hidden">
-          <form id="lyr-form" class="search">
-            <input id="lyr-q" type="search" placeholder="Title and artist" aria-label="Title and artist" autocomplete="off" />
-            <button class="primary" type="submit">Search</button>
-          </form>
-          <div id="lyr-status" class="sub" role="status"></div>
-          <ol id="lyr-results" class="results"></ol>
-          <div id="lyr-timing" class="lyr-timing hidden">
-            <span class="sub">Timing</span>
-            <button id="lyr-earlier" aria-label="Show lyrics earlier">-0.1 s</button>
-            <span id="lyr-offset" class="sub">0.0 s</span>
-            <button id="lyr-later" aria-label="Show lyrics later">+0.1 s</button>
+          <div id="lyr-find">
+            <form id="lyr-form" class="search">
+              <input id="lyr-q" type="search" placeholder="Title and artist" aria-label="Title and artist" autocomplete="off" />
+              <button class="primary" type="submit">Search</button>
+            </form>
+            <div id="lyr-status" class="sub" role="status"></div>
+            <ol id="lyr-results" class="results"></ol>
+            <div class="row-left">
+              <input id="lrc" type="file" accept=".lrc,.txt" hidden />
+              <button id="lrc-pick" class="link">Load an .lrc file</button>
+              <span class="sub">Synced lyrics from LRCLIB.</span>
+            </div>
           </div>
-          <div id="lyrics" class="lyrics" aria-live="off"></div>
-          <div class="row-left">
-            <input id="lrc" type="file" accept=".lrc,.txt" hidden />
-            <button id="lrc-pick" class="link">Load an .lrc file</button>
-            <span class="sub">Synced lyrics from LRCLIB.</span>
+          <div id="lyr-view" class="hidden">
+            <div class="lyr-head">
+              <span id="lyr-source" class="sub"></span>
+              <span class="lyr-timing" title="Shift the lyrics if they run early or late">
+                <button id="lyr-earlier" aria-label="Show lyrics 0.1 s earlier">&minus;</button>
+                <span id="lyr-offset" class="sub">0.0 s</span>
+                <button id="lyr-later" aria-label="Show lyrics 0.1 s later">+</button>
+              </span>
+              <button id="lyr-change" class="link">Change</button>
+            </div>
+            <div id="lyrics" class="lyrics" aria-live="off"></div>
           </div>
         </div>
 

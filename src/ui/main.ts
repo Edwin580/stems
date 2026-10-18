@@ -141,7 +141,8 @@ function resetSongUi() {
   $('sep-note').textContent = '';
   lyricLines = [];
   lyricsSearched = false;
-  show('lyr-timing', false);
+  showLyricsView(false);
+  show('now-line', false);
   lyricOffset = 0;
   $('lyr-offset').textContent = '0.0 s';
   sectionFromHandles = false;
@@ -247,6 +248,7 @@ function setTab(t: Tab) {
   });
   for (const k of ['loops', 'stems', 'lyrics', 'save', 'tune']) show(`panel-${k}`, k === t);
   if (t === 'lyrics' && !lyricsSearched && !lyricLines.length && player?.source) void findLyrics(true);
+  if (t === 'lyrics') { lyricActiveIdx = -2; lyricScrollHold = 0; }
 }
 document.querySelectorAll<HTMLButtonElement>('.tab').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab as Tab)));
 
@@ -653,11 +655,12 @@ function renderLyrics() {
   lyricLines.forEach((l) => {
     const d = document.createElement('div');
     d.className = 'line';
-    d.innerHTML = `<span class="t">${fmt(l.time)}</span><span>${esc(l.text)}</span>`;
+    d.textContent = l.text;
     d.addEventListener('click', () => player?.seek(Math.round((l.time + lyricOffset) * player!.source!.sampleRate)));
     box.appendChild(d);
   });
-  show('lyr-timing', lyricLines.length > 0);
+  showLyricsView(lyricLines.length > 0);
+  show('now-line', lyricLines.length > 0);
   applyLyricPenalty();
   renderLoops();
 }
@@ -665,10 +668,21 @@ function renderLyrics() {
 function useLyrics(r: LyricsResult) {
   lyricLines = r.synced;
   $('lyr-results').innerHTML = '';
-  $('lyr-status').innerHTML = `${esc(r.title)} · ${esc(r.artist)}. <button class="link" id="lyr-other">Wrong match</button>`;
-  $('lyr-other').addEventListener('click', () => { void findLyrics(false); });
+  $('lyr-status').textContent = '';
+  $('lyr-source').textContent = `${r.title} · ${r.artist}`;
   renderLyrics();
 }
+
+/** Lyrics loaded: the karaoke view; otherwise (or on "Change") the search. */
+function showLyricsView(on: boolean) {
+  show('lyr-view', on);
+  show('lyr-find', !on);
+}
+$('lyr-change').addEventListener('click', () => show('lyr-find', $('lyr-find').classList.contains('hidden')));
+$('now-line').addEventListener('click', () => {
+  setTab('lyrics');
+  $('panel-lyrics').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
 
 /** Search LRCLIB; with `auto`, take the top result if it's synced and the same length. */
 async function findLyrics(auto: boolean) {
@@ -713,7 +727,8 @@ $<HTMLInputElement>('lrc').addEventListener('change', async (e) => {
   lyricLines = lines;
   lyricsSearched = true;
   $('lyr-results').innerHTML = '';
-  $('lyr-status').textContent = `${lines.length} synced lines from ${f.name}.`;
+  $('lyr-status').textContent = '';
+  $('lyr-source').textContent = f.name;
   renderLyrics();
 });
 
@@ -905,19 +920,25 @@ function frame() {
     updatePlayButton();
     if (lyricLines.length) {
       const idx = lineAt(lyricLines, pos / p.source.sampleRate - lyricOffset);
+      // Current line in the player card, so it can be followed from any tab.
+      // A line counts as over once the next starts or 8 s have passed.
+      const cur = lyricLines[idx];
+      const ended = !cur || pos / p.source.sampleRate - lyricOffset > Math.min(lyricLines[idx + 1]?.time ?? Infinity, cur.time + 8);
+      const curText = ended ? '' : cur.text, nextText = lyricLines[idx + 1]?.text ?? '';
+      if ($('now-cur').textContent !== curText) $('now-cur').textContent = curText;
+      if ($('now-next').textContent !== nextText) $('now-next').textContent = nextText;
       if (idx !== lyricActiveIdx) {
         lyricActiveIdx = idx;
         const box = $('lyrics');
-        box.querySelectorAll<HTMLDivElement>('.line').forEach((el, i) => el.classList.toggle('active', i === idx));
-        const el = box.children[idx] as HTMLElement | undefined;
-        // Scroll only when the line leaves the middle of the view, and never
-        // while the person is scrolling the lyrics themselves.
+        box.querySelectorAll<HTMLDivElement>('.line').forEach((el, i) => {
+          el.classList.toggle('active', i === idx);
+          el.classList.toggle('near', Math.abs(i - idx) === 1);
+        });
+        // Keep the sung line centred, except while the person scrolls the lyrics.
+        const el = box.children[Math.max(0, idx)] as HTMLElement | undefined;
         if (el && tab === 'lyrics' && performance.now() > lyricScrollHold) {
-          const top = el.offsetTop - box.offsetTop;
-          const mid = box.scrollTop + box.clientHeight / 2;
-          if (Math.abs(top + el.clientHeight / 2 - mid) > box.clientHeight / 4) {
-            box.scrollTo({ top: top - box.clientHeight / 2 + el.clientHeight / 2, behavior: Math.abs(top - box.scrollTop) > box.clientHeight * 2 ? 'auto' : 'smooth' });
-          }
+          const target = el.offsetTop - box.clientHeight / 2 + el.clientHeight / 2;
+          box.scrollTo({ top: target, behavior: Math.abs(target - box.scrollTop) > box.clientHeight ? 'auto' : 'smooth' });
         }
       }
     }
