@@ -22,11 +22,6 @@
       <section id="error" class="card error hidden" role="alert"></section>
 
       <section id="home" class="home">
-        <button id="now-playing" class="now-playing hidden">
-          <span class="sub">Now playing</span>
-          <b id="now-title"></b>
-          <span class="sub">Back to the player</span>
-        </button>
         <div id="hero">
           <h1>Loop any song without audible seams.</h1>
           <p class="lede">stems maps a track's beats, bars and repeated sections, then plays it indefinitely by splicing between bars that match. Loop a section, separate the stems, or export a long render. Songs stay in a library on this device.</p>
@@ -232,6 +227,19 @@
         </div>
       </section>
     </main>
+
+    <div id="now-playing" class="now-playing hidden">
+      <button id="np-open" class="np-open">
+        <span id="np-eq" class="np-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span class="np-text">
+          <b id="now-title"></b>
+          <span id="np-sub"></span>
+        </span>
+        <span id="np-time" class="np-time"></span>
+      </button>
+      <button id="np-play" class="np-play" aria-label="Play"></button>
+      <div class="np-bar" aria-hidden="true"><div id="np-fill"></div></div>
+    </div>
 
     <footer>
       <div>Audio is processed locally and never uploaded. <button id="install" class="link hidden">Install app</button></div>

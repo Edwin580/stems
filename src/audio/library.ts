@@ -49,13 +49,16 @@ export function persist(): void {
   try { void navigator.storage?.persist?.(); } catch { /* unsupported */ }
 }
 
-/** Add a file (no-op if the same audio is already there); returns its entry. */
-export async function addSong(file: File): Promise<LibrarySong> {
+/**
+ * Add a file (no-op if the same audio is already there); returns its entry
+ * and whether this call stored it.
+ */
+export async function addSong(file: File): Promise<LibrarySong & { isNew: boolean }> {
   const id = await hashBytes(await file.arrayBuffer());
   const existing = await run<Stored>('readonly', (s) => s.get(id));
   if (existing) {
     const { blob: _b, ...meta } = existing;
-    return meta;
+    return { ...meta, isNew: false };
   }
   const info = await songInfo(file);
   const entry: Stored = {
@@ -65,7 +68,7 @@ export async function addSong(file: File): Promise<LibrarySong> {
   await run('readwrite', (s) => s.put(entry));
   persist();
   const { blob: _b, ...meta } = entry;
-  return meta;
+  return { ...meta, isNew: true };
 }
 
 /** All songs, most recently played (or added) first, without their audio. */

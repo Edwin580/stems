@@ -28,7 +28,7 @@ export function parseLrc(text: string): LyricLine[] {
     while ((m = TS.exec(line))) {
       const min = Number(m[1]);
       const sec = Number(m[2]);
-      const frac = m[3] ? Number(m[3]) / (m[3].length === 3 ? 1000 : 100) : 0;
+      const frac = m[3] ? Number(m[3]) / 10 ** m[3].length : 0;
       times.push(min * 60 + sec + frac);
     }
     const text = line.replace(TS, '').trim();

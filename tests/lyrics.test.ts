@@ -12,6 +12,7 @@ describe('LRC parsing', () => {
     expect(lines[1].time).toBe(15);
     expect(lines[2].time).toBe(45);
     expect(lines[4].time).toBe(120);
+    expect(parseLrc('[00:12.5]Tenths')[0].time).toBeCloseTo(12.5, 6);
   });
 
   it('finds the active line', () => {
