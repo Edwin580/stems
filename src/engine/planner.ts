@@ -49,11 +49,11 @@ export interface PlannerSettings {
 export const DEFAULT_SETTINGS: PlannerSettings = {
   mode: 'endless',
   threshold: 0.3,
-  barsBetweenJumps: 8,
+  barsBetweenJumps: 16,
   barLock: true,
   fadeSec: 0.06,
-  minRho: 0.2,
-  maxSpectralDb: 8,
+  minRho: 0.45,
+  maxSpectralDb: 6,
   autoFade: true,
   loudnessMatch: true,
   phraseBias: 0.6,
@@ -83,6 +83,14 @@ export class Planner {
   /** Effective threshold after automatic relaxation. */
   effectiveThreshold = 0;
   coreSize = 0;
+  /**
+   * The part of the song Endless cycles through: the person's section, or
+   * the automatic one between the wrap seam's landing and its exit. Null only
+   * when no wrap seam exists (falls back to the strongly connected core).
+   */
+  section: { start: number; end: number } | null = null;
+  /** How often each beat has been planned through, for spreading variety jumps. */
+  private played = new Float32Array(0);
 
   constructor(a: Analysis, src: AudioSource, coarse: Float32Array, settings: PlannerSettings, seed = Date.now()) {
     this.a = a;
@@ -107,34 +115,38 @@ export class Planner {
   }
 
   /**
-   * Filter edges by threshold; relax it until a usable infinite core exists.
-   * "Usable" means a big enough core with about one exit per bar on average:
-   * a core held together by a handful of edges plays as one long fixed cycle.
+   * Endless plays the track through and, near its end, takes the cleanest
+   * seam back toward its start (the "wrap"), so it never runs out of music
+   * and never gets stuck cycling one region. Extra jumps for variety only use
+   * seams under the strictness threshold, at least two bars long, inside the
+   * cycle. A section set by the person replaces the automatic cycle.
    */
   private rebuildGraph() {
     const n = this.a.beats.length;
-    const m = this.a.meter.beatsPerBar;
-    let thr = this.s.threshold;
-    const r = this.s.range;
-    if (r) {
-      // Inside a section the wrap from its end to its start keeps every beat
-      // reachable, so the core is the whole section; jumps stay inside it.
-      // Relax strictness the same way: about one exit per bar.
-      const inside = (thr: number) => this.a.edges.map((l, i) => (i >= r.start && i + 1 < r.end ? l.filter((e) => e.cost <= thr && e.to >= r.start && e.to < r.end) : []));
-      let edges = inside(thr);
-      for (let attempt = 0; attempt < 11 && edges.reduce((k, l) => k + l.length, 0) < (r.end - r.start) / m; attempt++) {
-        thr *= 1.2;
-        edges = inside(thr);
-      }
-      this.edges = edges;
+    const thr = this.s.threshold;
+    this.played = new Float32Array(n);
+    this.section = this.s.range ?? this.autoSection();
+    const sec = this.section;
+    if (sec) {
+      const minHop = 2 * this.a.meter.beatsPerBar;
+      this.edges = this.a.edges.map((l, i) => (i >= sec.start && i + 1 < sec.end
+        ? l.filter((e) => e.cost <= thr && e.to >= sec.start && e.to < sec.end && Math.abs(e.to - (i + 1)) >= minHop)
+        : []));
+      // The wrap itself, so the song map draws it.
+      const wrapCost = this.a.transitions[(sec.end - 1) * n + sec.start];
+      this.edges[sec.end - 1] = [{ from: sec.end - 1, to: sec.start, cost: Number.isFinite(wrapCost) ? wrapCost : 1 }];
       this.core = new Uint8Array(n);
-      this.core.fill(1, r.start, r.end);
-      this.coreSize = r.end - r.start;
+      this.core.fill(1, sec.start, sec.end);
+      this.coreSize = sec.end - sec.start;
       this.effectiveThreshold = thr;
       return;
     }
+    // No wrap seam at all (very short or unusual material): the strongly
+    // connected core of the seam graph, relaxed until it is usable.
+    const m = this.a.meter.beatsPerBar;
+    let t = thr;
     for (let attempt = 0; attempt < 12; attempt++) {
-      const filtered = this.a.edges.map((l) => l.filter((e) => e.cost <= thr));
+      const filtered = this.a.edges.map((l) => l.filter((e) => e.cost <= t));
       const core = infiniteCore(n, filtered);
       let size = 0;
       for (let i = 0; i < n; i++) size += core[i];
@@ -144,11 +156,45 @@ export class Planner {
         this.edges = pruned;
         this.core = core;
         this.coreSize = size;
-        this.effectiveThreshold = thr;
+        this.effectiveThreshold = t;
         return;
       }
-      thr *= 1.2;
+      t *= 1.2;
     }
+  }
+
+  /**
+   * The automatic cycle: the best bar-aligned seam from the last part of the
+   * track back to its first part. Candidates are ranked by musical cost with
+   * a bonus for spanning more of the song, then the best few are checked at
+   * sample level (waveform correlation, spectral step).
+   */
+  private autoSection(): { start: number; end: number } | null {
+    const a = this.a, n = a.beats.length, T = a.transitions;
+    const m = a.meter.beatsPerBar;
+    const down = (i: number) => (((i - a.meter.phase) % m) + m) % m === 0;
+    if (n < 8 * m) return null;
+    const cands: { from: number; to: number; key: number }[] = [];
+    for (let e = Math.floor(n * 0.6); e < n - 1; e++) {
+      if (!down(e)) continue; // leave at a bar line
+      const i = e - 1;
+      for (let j = 0; j <= Math.floor(n * 0.4); j++) {
+        if (!down(j)) continue;
+        const c = T[i * n + j];
+        if (!Number.isFinite(c)) continue;
+        cands.push({ from: i, to: j, key: c - 0.15 * ((e - j) / n) });
+      }
+    }
+    if (!cands.length) return null;
+    cands.sort((x, y) => x.key - y.key);
+    let best: { from: number; to: number; score: number } | null = null;
+    for (const c of cands.slice(0, 12)) {
+      const j = this.makeJump(c.from, c.to);
+      this.nextId--; // probe only
+      const score = c.key + (1 - Math.max(0, j.rho)) * 0.5 + Math.max(0, j.spectralDb - 3) * 0.03;
+      if (!best || score < best.score) best = { from: c.from, to: c.to, score };
+    }
+    return best ? { start: best.to, end: best.from + 1 } : null;
   }
 
   beatAtSample(sample: number): number {
@@ -208,14 +254,16 @@ export class Planner {
     const m = this.a.meter.beatsPerBar;
     const expected = Math.max(1, this.s.barsBetweenJumps) * m;
     const minStay = m;
-    const r = this.s.range;
-    if (r && (this.cursor < r.start || this.cursor >= r.end)) this.cursor = r.start;
+    const r = this.section;
+    // Past the cycle (after a seek into the outro): head back in at the next bar line.
+    if (r && this.cursor >= r.end) return this.reenter(this.cursor);
     for (let i = this.cursor; i < n - 1; i++, this.beatsSinceJump++) {
       if (r && i + 1 >= r.end) return this.take(r.end - 1, r.start, this.makeJump(r.end - 1, r.start));
       const out = this.edges[i];
       const forced = this.core[i] === 1 && (i + 1 >= n - 1 || this.core[i + 1] === 0);
       if (!out.length) continue;
       if (!forced) {
+        if (this.s.barsBetweenJumps <= 0) continue; // extra jumps off: a straight cycle
         if (this.beatsSinceJump < minStay) continue;
         if (this.s.barLock && !this.isBarEnd(i)) continue;
         // Linearly rising hazard → jump spacing averages `expected` beats.
@@ -237,7 +285,21 @@ export class Planner {
     return null;
   }
 
-  private take(_from: number, to: number, jump: Jump & { spectralDb: number }): Jump {
+  /** From beat `i` outside the cycle, the cleanest seam at the next bar line back into it. */
+  private reenter(i: number): Jump {
+    const a = this.a, n = a.beats.length, sec = this.section!;
+    let from = i;
+    while (from < n - 2 && !this.isBarEnd(from)) from++;
+    let to = sec.start, bestCost = Infinity;
+    for (let j = sec.start; j < sec.end; j++) {
+      const c = a.transitions[from * n + j];
+      if (c < bestCost) { bestCost = c; to = j; }
+    }
+    return this.take(from, to, this.makeJump(from, to));
+  }
+
+  private take(from: number, to: number, jump: Jump & { spectralDb: number }): Jump {
+    for (let b = Math.max(0, this.cursor); b <= from && b < this.played.length; b++) this.played[b]++;
     this.recentTargets.push(to);
     if (this.recentTargets.length > 6) this.recentTargets.shift();
     this.cursor = to;
@@ -252,7 +314,11 @@ export class Planner {
     if (!pool.length) return null;
     const temp = 0.08;
     const best = pool[0].cost;
-    const w = pool.map((e) => Math.exp(-(e.cost - best) / temp));
+    // Favour landing where the walk has spent the least time, so long
+    // listening covers the whole cycle instead of circling one part.
+    let least = Infinity;
+    for (const e of pool) least = Math.min(least, this.played[e.to] ?? 0);
+    const w = pool.map((e) => Math.exp(-(e.cost - best) / temp - ((this.played[e.to] ?? 0) - least)));
     let r = this.rng() * w.reduce((x, y) => x + y, 0);
     for (let k = 0; k < pool.length; k++) {
       r -= w[k];

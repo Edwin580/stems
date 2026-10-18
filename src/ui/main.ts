@@ -232,9 +232,13 @@ function updateModeHint() {
   const sr = p.source.sampleRate;
   const r = p.currentSettings.range;
   if (currentMode() === 'endless') {
+    const sec = p.planner?.section;
+    const b = p.analysis.beats;
     el.textContent = r
-      ? `Endless within ${fmt(p.analysis.beats[r.start] / sr)}-${fmt(p.analysis.beats[r.end] / sr)}.`
-      : 'Endless across the full track, splicing between matching bars.';
+      ? `Endless within ${fmt(b[r.start] / sr)}-${fmt(b[r.end] / sr)}.`
+      : sec
+        ? `Endless: plays through to ${fmt(b[sec.end] / sr)}, then rejoins at ${fmt(b[sec.start] / sr)} through a matched seam.`
+        : 'Endless across the full track, splicing between matching bars.';
     return;
   }
   const loop = p.currentSettings.loop;
@@ -266,15 +270,13 @@ function refreshGraph() {
   const pl = player?.planner;
   if (!pl) return;
   viz.setGraph(pl.activeEdges, pl.coreMask, pl.settings.mode === 'loop' ? pl.settings.loop : null);
-  const n = player!.analysis!.beats.length;
-  const pct = Math.round((100 * pl.coreSize) / n);
-  const relaxed = pl.effectiveThreshold > pl.settings.threshold + 1e-6;
-  $('thr-note').textContent = `${pct}% of the track is reachable${relaxed ? '; loosened automatically because the setting left too few jumps' : ''}.`;
+  const extra = pl.activeEdges.reduce((k, l) => k + l.length, 0) - (pl.section ? 1 : 0);
+  $('thr-note').textContent = `${extra} extra jump point${extra === 1 ? '' : 's'} pass at this setting.`;
 }
 
 function syncControls() {
   const v = (id: string) => $<HTMLInputElement>(id).value;
-  $('bars-v').textContent = v('bars');
+  $('bars-v').textContent = Number(v('bars')) ? `about every ${v('bars')} bars` : 'off';
   $('thr-v').textContent = `≥ ${costToQuality(Number(v('thr')))}% match`;
   $('fade-v').textContent = `${v('fade')} ms`;
   $('phrase-v').textContent = `${Math.round(Number(v('phrase')) * 100)}%`;

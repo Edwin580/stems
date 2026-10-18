@@ -119,6 +119,31 @@ describe.each([
     expect(maxStep(out[0])).toBeLessThanOrEqual(maxStep(song.channels[0]) * 1.05);
   });
 
+  it('Endless cycles most of the song: wraps from its last part back to its first part', () => {
+    const n = a.beats.length;
+    const planner = new Planner(a, src, coarse, { ...DEFAULT_SETTINGS }, 5);
+    const sec = planner.section!;
+    expect(sec).not.toBeNull();
+    expect(sec.start).toBeLessThan(n * 0.4);
+    expect(sec.end).toBeGreaterThan(n * 0.6);
+    planner.resetFrom(0);
+    let wraps = 0;
+    for (let k = 0; k < 30; k++) {
+      const j = planner.next()!;
+      expect(j.toBeat!).toBeGreaterThanOrEqual(sec.start);
+      expect(j.fromBeat! + 1).toBeLessThanOrEqual(sec.end);
+      // Variety jumps are never tiny hops.
+      if (!(j.fromBeat === sec.end - 1 && j.toBeat === sec.start)) expect(Math.abs(j.toBeat! - (j.fromBeat! + 1))).toBeGreaterThanOrEqual(2 * a.meter.beatsPerBar);
+      else wraps++;
+    }
+    expect(wraps).toBeGreaterThan(0);
+    // After a seek past the cycle, the next jump heads back into it.
+    planner.resetFrom(a.beats[Math.min(n - 3, sec.end + 2)]);
+    const back = planner.next()!;
+    expect(back.toBeat!).toBeGreaterThanOrEqual(sec.start);
+    expect(back.toBeat!).toBeLessThan(sec.end);
+  });
+
   it('keeps Endless inside a chosen section and wraps from its end to its start', () => {
     const m = a.meter.beatsPerBar;
     const start = m * 2 + a.meter.phase, end = start + m * 8;
@@ -159,7 +184,7 @@ describe.each([
     const sp = new Splicer(song.channels, song.sampleRate);
     sp.setRunning(true);
     const block = 256;
-    const total = song.sampleRate * 60;
+    const total = song.sampleRate * 120; // long enough for several jumps: the planner now jumps sparingly
     const out = [new Float32Array(total), new Float32Array(total)];
     const seams: { frame: number; jump: ReturnType<Planner['next']> }[] = [];
     const byId = new Map<number, NonNullable<ReturnType<Planner['next']>>>();
