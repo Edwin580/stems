@@ -1,7 +1,7 @@
 import '@fontsource-variable/inter';
 import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
-import { clearCache } from '../audio/cache';
+import { clearCache, getLyricSearch, getSongLyrics, putLyricSearch, putSongLyrics } from '../audio/cache';
 import { addSong, fetchAudioFile, listSongs, matchSongs, removeSong, songFile, takeSharedFiles, updateSong, type LibrarySong } from '../audio/library';
 import { encodeMp3InWorker } from '../audio/mp3-client';
 import { DEFAULT_MODEL_URL, Player, sharedMemory } from '../audio/player';
@@ -105,20 +105,32 @@ function waitForSource(p: Player, done: Promise<void>): Promise<void> {
 /** Library id of the loaded song (empty for the demo). */
 let currentSongId = '';
 
+/** A song is being opened (the isolation fix-up must not reload the page meanwhile). */
+let opening = 0;
+
 async function load(source: { file?: File; demo?: boolean; libraryId?: string }) {
   show('error', false);
   show('home', false);
+  setMiniPlayer(false);
   show('another');
+  const token = ++songToken;
+  opening++;
+  // Only a song this call added is removed again if it can't be decoded.
+  let added = '';
   try {
+    // Stop the previous song first, so a failure below never leaves it playing out of reach.
+    player?.reset();
     currentSongId = source.libraryId ?? '';
     if (source.file && !currentSongId) {
-      try { currentSongId = (await addSong(source.file)).id; } catch { /* storage full or blocked: play it anyway */ }
+      try {
+        const entry = await addSong(source.file);
+        currentSongId = entry.id;
+        if (entry.isNew) added = entry.id;
+      } catch { /* storage full or blocked: play it anyway */ }
     }
     const p = await ensurePlayer();
-    // Drop the previous song's state before the UI resets (it reads both).
-    p.source = null;
-    p.analysis = null;
-    p.planner = null;
+    if (token !== songToken) return;
+    p.reset();
     show('app');
     show('aprog');
     resetSongUi();
@@ -135,15 +147,19 @@ async function load(source: { file?: File; demo?: boolean; libraryId?: string })
     $('artist').textContent = song.artist;
     $<HTMLInputElement>('lyr-q').value = [song.title, song.artist].filter(Boolean).join(' ');
     await waitForSource(p, loaded);
+    if (token !== songToken) return;
     if (p.source) onDecoded(p);
     await loaded;
   } catch (err) {
+    if (token !== songToken) return;
     // A file that can't be decoded doesn't belong in the library.
-    if (source.file && !source.libraryId && currentSongId) { void removeSong(currentSongId).then(() => renderLibrary()); currentSongId = ''; }
+    if (added) { void removeSong(added).then(() => renderLibrary()); currentSongId = ''; }
     show('app', false);
     show('another', false);
     show('home');
     showError(`Couldn't decode that file (${errText(err)}). MP3, M4A, WAV, FLAC and OGG are supported.`);
+  } finally {
+    opening--;
   }
 }
 
@@ -178,6 +194,29 @@ function onDecoded(p: Player) {
   $<HTMLButtonElement>('play').disabled = false;
   updateMediaSession();
   updateModeHint();
+  void restoreLyrics();
+}
+
+/** Show the lyrics chosen for this song last time; otherwise look them up in the background. */
+async function restoreLyrics() {
+  const token = songToken;
+  const saved = currentSongId ? await getSongLyrics(currentSongId) : null;
+  if (token !== songToken || lyricLines.length) return;
+  if (saved?.lines.length) {
+    lyricsSearched = true;
+    lyricLines = saved.lines;
+    lyricSource = saved.source;
+    $('lyr-source').textContent = saved.source;
+    setLyricOffset(saved.offset, false);
+    renderLyrics();
+  } else if (!lyricsSearched && song.title && currentSongId) {
+    void findLyrics(true);
+  }
+}
+
+/** Remember the lyrics and timing for this song. */
+function saveLyrics() {
+  if (currentSongId && lyricLines.length) void putSongLyrics(currentSongId, { lines: lyricLines, source: lyricSource, offset: lyricOffset });
 }
 
 function onAnalysed(fromCache: boolean) {
@@ -193,6 +232,10 @@ function onAnalysed(fromCache: boolean) {
   ].filter(Boolean).map((s) => `<span>${s}</span>`).join('');
   viz.setAnalysis(a);
   $<HTMLInputElement>('thr').value = String(p.currentSettings.threshold);
+  // The player starts each song from defaults: carry over what the controls show.
+  p.updateSettings(settingsFromControls());
+  // Loop picked while the analysis ran.
+  if (document.querySelector<HTMLButtonElement>('.seg [aria-pressed=true]')?.dataset.mode === 'loop') setMode('loop');
   syncControls();
   initSection();
   if (lyricLines.length) applyLyricPenalty();
@@ -445,6 +488,10 @@ function download(blob: Blob, name: string) {
 
 let lyricLines: LyricLine[] = [];
 let lyricsSearched = false;
+/** Where the shown lyrics came from (saved with them per song). */
+let lyricSource = '';
+/** Bumped on every song load, so late async results for the previous song are dropped. */
+let songToken = 0;
 
 function displayedLoops(): LoopCandidate[] {
   const p = player;
@@ -658,11 +705,12 @@ function applyLyricPenalty() {
   }, 300);
 }
 
-function setLyricOffset(v: number) {
+function setLyricOffset(v: number, save = true) {
   lyricOffset = Math.round(v * 10) / 10;
   $('lyr-offset').textContent = `${lyricOffset > 0 ? '+' : ''}${lyricOffset.toFixed(1)} s`;
   lyricActiveIdx = -2;
   applyLyricPenalty();
+  if (save) saveLyrics();
 }
 $('lyr-earlier').addEventListener('click', () => setLyricOffset(lyricOffset - 0.1));
 $('lyr-later').addEventListener('click', () => setLyricOffset(lyricOffset + 0.1));
@@ -685,11 +733,38 @@ function renderLyrics() {
 }
 
 function useLyrics(r: LyricsResult) {
-  lyricLines = r.synced;
+  setLyrics(r.synced, `${r.title} · ${r.artist}`);
+}
+
+function setLyrics(lines: LyricLine[], source: string) {
+  lyricLines = lines;
+  lyricsSearched = true;
+  lyricSource = source;
   $('lyr-results').innerHTML = '';
   $('lyr-status').textContent = '';
-  $('lyr-source').textContent = `${r.title} · ${r.artist}`;
+  $('lyr-source').textContent = source;
+  setLyricOffset(0, false);
   renderLyrics();
+  saveLyrics();
+}
+
+/** LRCLIB search with a memory and IndexedDB cache in front (the service is often slow or busy). */
+const lyricSearches = new Map<string, Promise<LyricsResult[]>>();
+function cachedSearch(q: string, duration: number): Promise<LyricsResult[]> {
+  const key = `${q.toLowerCase()}|${Math.round(duration)}`;
+  let hit = lyricSearches.get(key);
+  if (!hit) {
+    hit = (async () => {
+      const stored = await getLyricSearch<LyricsResult[]>(key);
+      if (stored) return stored;
+      const results = await searchLyrics(q, duration);
+      if (results.length) void putLyricSearch(key, results);
+      return results;
+    })();
+    hit.catch(() => lyricSearches.delete(key));
+    lyricSearches.set(key, hit);
+  }
+  return hit;
 }
 
 /** Lyrics loaded: the karaoke view; otherwise (or on "Change") the search. */
@@ -708,6 +783,7 @@ async function findLyrics(auto: boolean) {
   const q = $<HTMLInputElement>('lyr-q').value.trim();
   if (!q) { $('lyr-status').textContent = 'Enter a title and artist.'; return; }
   lyricsSearched = true;
+  const token = songToken;
   const status = $('lyr-status');
   const list = $('lyr-results');
   status.textContent = 'Searching…';
@@ -715,7 +791,8 @@ async function findLyrics(auto: boolean) {
   const src = player?.source;
   const duration = src ? src.length / src.sampleRate : 0;
   try {
-    const results = await searchLyrics(q.replace(/\s+[-–—]\s+/g, ' '), duration);
+    const results = await cachedSearch(q.replace(/\s+[-–—]\s+/g, ' '), duration);
+    if (token !== songToken || (auto && lyricLines.length)) return;
     const top = results[0];
     if (auto && top?.synced.length && (!duration || Math.abs(top.duration - duration) <= 4)) { useLyrics(top); return; }
     if (!results.some((r) => r.synced.length)) {
@@ -731,7 +808,10 @@ async function findLyrics(auto: boolean) {
       list.appendChild(li);
     }
   } catch (err) {
+    if (token !== songToken) return;
     status.textContent = `Lyrics search failed: ${errText(err)}`;
+    // A failed background lookup is retried when the Lyrics tab opens.
+    if (auto) lyricsSearched = false;
   }
 }
 $<HTMLFormElement>('lyr-form').addEventListener('submit', (e) => { e.preventDefault(); void findLyrics(false); });
@@ -743,12 +823,7 @@ $<HTMLInputElement>('lrc').addEventListener('change', async (e) => {
   if (!f) return;
   const lines = parseLrc(await f.text());
   if (!lines.length) { $('lyr-status').textContent = 'No synced lines in that file.'; return; }
-  lyricLines = lines;
-  lyricsSearched = true;
-  $('lyr-results').innerHTML = '';
-  $('lyr-status').textContent = '';
-  $('lyr-source').textContent = f.name;
-  renderLyrics();
+  setLyrics(lines, f.name);
 });
 
 // ---- Share links --------------------------------------------------------------------
@@ -806,6 +881,7 @@ function applyShare() {
 function applyShareMix() {
   const p = player, s = pendingShare;
   if (!p?.stems || !s) return;
+  if (s.h && p.fileHash && !p.fileHash.startsWith(s.h)) return;
   p.stems.names.forEach((n, i) => { if (s.gains && n in s.gains) { vol[i] = s.gains[n] || 1; mute[i] = s.gains[n] === 0; } });
   document.querySelectorAll<HTMLElement>('#stem-rows .stem').forEach((row, i) => {
     row.querySelector<HTMLInputElement>('input')!.value = String(vol[i]);
@@ -830,9 +906,11 @@ function updatePlayButton() {
   const on = !!player?.playing;
   if (on === shownPlaying) return;
   shownPlaying = on;
-  const b = $('play');
-  b.innerHTML = on ? ICON_PAUSE : ICON_PLAY;
-  b.setAttribute('aria-label', on ? 'Pause' : 'Play');
+  for (const b of [$('play'), $('np-play')]) {
+    b.innerHTML = on ? ICON_PAUSE : ICON_PLAY;
+    b.setAttribute('aria-label', on ? 'Pause' : 'Play');
+  }
+  $('np-eq').classList.toggle('on', on);
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = on ? 'playing' : 'paused';
 }
 
@@ -844,6 +922,7 @@ async function togglePlay() {
   updatePlayButton();
 }
 $('play').addEventListener('click', togglePlay);
+$('np-play').addEventListener('click', togglePlay);
 document.addEventListener('keydown', (e) => {
   const t = e.target;
   if (e.code === 'Space' && !(t instanceof HTMLInputElement) && !(t instanceof HTMLButtonElement) && !(t instanceof HTMLSelectElement)) {
@@ -872,7 +951,20 @@ function updateMediaSession() {
 const fileInput = $<HTMLInputElement>('file');
 $('pick').addEventListener('click', () => fileInput.click());
 $('another').addEventListener('click', () => showLibrary());
-$('now-playing').addEventListener('click', () => { show('home', false); show('app'); show('another'); window.scrollTo({ top: 0 }); });
+$('np-open').addEventListener('click', () => showPlayer());
+
+function showPlayer() {
+  show('home', false);
+  setMiniPlayer(false);
+  show('app');
+  show('another');
+  window.scrollTo({ top: 0 });
+}
+
+function setMiniPlayer(on: boolean) {
+  show('now-playing', on);
+  document.body.classList.toggle('np-shown', on);
+}
 fileInput.addEventListener('change', () => { const fs = [...(fileInput.files ?? [])]; fileInput.value = ''; void addFiles(fs); });
 $('demo').addEventListener('click', () => load({ demo: true }));
 const drop = $('drop');
@@ -894,9 +986,14 @@ async function addFiles(files: File[]) {
   if (audio.length === 1) { void load({ file: audio[0] }); return; }
   const status = $('url-status');
   let first: LibrarySong | null = null;
-  for (const [i, f] of audio.entries()) {
-    status.textContent = `Adding ${i + 1} of ${audio.length}: ${f.name}`;
-    try { const s = await addSong(f); first ??= s; } catch { /* skip unreadable files */ }
+  opening++;
+  try {
+    for (const [i, f] of audio.entries()) {
+      status.textContent = `Adding ${i + 1} of ${audio.length}: ${f.name}`;
+      try { const s = await addSong(f); first ??= s; } catch { /* skip unreadable files */ }
+    }
+  } finally {
+    opening--;
   }
   status.textContent = `Added ${audio.length} songs to the library.`;
   await renderLibrary();
@@ -910,6 +1007,7 @@ async function openSong(id: string) {
 
 function showLibrary() {
   show('app', false);
+  setMiniPlayer(!!player?.source);
   show('another', false);
   show('home');
   void renderLibrary();
@@ -923,8 +1021,8 @@ async function renderLibrary(reload = true) {
   show('library', librarySongs.length > 0);
   show('hero', librarySongs.length === 0 && !playing);
   $('drop').classList.toggle('compact', librarySongs.length > 0);
-  show('now-playing', playing);
-  $('now-title').textContent = [song.title, song.artist].filter(Boolean).join(' · ');
+  $('now-title').textContent = song.title || 'Untitled';
+  $('np-open').setAttribute('aria-label', `Back to the player: ${[song.title, song.artist].filter(Boolean).join(', ')}`);
   $('lib-count').textContent = librarySongs.length ? `${librarySongs.length}` : '';
   const list = $('lib-list');
   list.innerHTML = '';
@@ -935,7 +1033,7 @@ async function renderLibrary(reload = true) {
     li.classList.toggle('current', s.id === currentSongId);
     const meta = [s.artist, s.duration ? fmt(s.duration) : '', `${(s.size / 1e6).toFixed(1)} MB`].filter(Boolean).join(' · ');
     li.innerHTML = `<button class="open"><b>${esc(s.title || s.name)}</b><span>${esc(meta)}</span></button><button class="rm" aria-label="Remove ${esc(s.title || s.name)} from the library">Remove</button>`;
-    li.querySelector<HTMLButtonElement>('.open')!.onclick = () => (s.id === currentSongId && player?.source ? $('now-playing').click() : void openSong(s.id));
+    li.querySelector<HTMLButtonElement>('.open')!.onclick = () => (s.id === currentSongId && player?.source ? showPlayer() : void openSong(s.id));
     li.querySelector<HTMLButtonElement>('.rm')!.onclick = async () => { await removeSong(s.id); if (s.id === currentSongId) currentSongId = ''; void renderLibrary(); };
     list.appendChild(li);
   }
@@ -983,9 +1081,9 @@ $('install').addEventListener('click', async () => { await installPrompt?.prompt
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   navigator.serviceWorker.register('./sw.js')
     .then(() => navigator.serviceWorker.ready)
-    .then(() => ensureIsolationState(() => !player?.source))
+    .then(() => ensureIsolationState(() => !player?.source && !opening))
     .catch(() => {});
-  navigator.serviceWorker.addEventListener('controllerchange', () => { void ensureIsolationState(() => !player?.source); });
+  navigator.serviceWorker.addEventListener('controllerchange', () => { void ensureIsolationState(() => !player?.source && !opening); });
 }
 
 // Multi-threaded mode (cross-origin isolation). Needs the service worker in production builds.
@@ -1008,7 +1106,18 @@ lq?.setConsumer(async (params) => {
 
 function frame() {
   const p = player;
-  if (p?.source && document.visibilityState === 'visible') {
+  if (p?.source && document.visibilityState === 'visible' && !$('now-playing').classList.contains('hidden')) {
+    const pos = p.audiblePosition(), sr = p.source.sampleRate;
+    const t = pos / sr - lyricOffset;
+    const line = lyricLines.length ? lyricLines[lineAt(lyricLines, t)] : undefined;
+    const sub = line && t - line.time < 8 ? line.text : [song.artist, currentMode() === 'loop' ? 'Loop' : 'Endless'].filter(Boolean).join(' · ');
+    if ($('np-sub').textContent !== sub) $('np-sub').textContent = sub;
+    $('np-sub').classList.toggle('lyric', !!line && sub === line.text);
+    $('np-time').textContent = `${fmt(pos / sr)} / ${fmt(p.source.length / sr)}`;
+    $('np-fill').style.width = `${(100 * pos / p.source.length).toFixed(2)}%`;
+    updatePlayButton();
+  }
+  if (p?.source && document.visibilityState === 'visible' && !$('app').classList.contains('hidden')) {
     const pos = p.audiblePosition();
     const heads = p.stems
       ? p.stems.names.map((n, i) => ({ n, i })).filter(({ i }) => p.locked[i]).map(({ n, i }) => ({ pos: p.stemPositions[i] ?? 0, label: n }))

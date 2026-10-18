@@ -75,3 +75,20 @@ export async function clearCache(): Promise<void> {
     });
   } catch { /* ignore */ }
 }
+
+// ---- Lyrics -----------------------------------------------------------------------------
+
+/** Lyrics chosen for a song, so reopening it shows them without a search. */
+export interface SavedLyrics { lines: { time: number; text: string }[]; source: string; offset: number }
+const lKey = (hash: string) => `lyrics:song:${hash}`;
+export const getSongLyrics = (hash: string) => get<SavedLyrics>(lKey(hash));
+export const putSongLyrics = (hash: string, l: SavedLyrics) => put(lKey(hash), l);
+
+/** LRCLIB search responses, kept for a week. */
+const SEARCH_TTL = 7 * 24 * 3600e3;
+const qKey = (q: string) => `lyrics:q:${q.toLowerCase().replace(/\s+/g, ' ').trim()}`;
+export async function getLyricSearch<T>(q: string): Promise<T | null> {
+  const e = await get<{ at: number; value: T }>(qKey(q));
+  return e && Date.now() - e.at < SEARCH_TTL ? e.value : null;
+}
+export const putLyricSearch = (q: string, value: unknown) => put(qKey(q), { at: Date.now(), value });

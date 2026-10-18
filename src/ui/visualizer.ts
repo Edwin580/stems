@@ -173,7 +173,7 @@ export class Visualizer {
     }
     const maxH = H * 0.45;
     if (this.section) {
-      g.fillStyle = css('--card');
+      g.fillStyle = css('--bg');
       g.globalAlpha = 0.7;
       const x1 = this.x(this.section[0]), x2 = this.x(this.section[1]);
       g.fillRect(0, 0, x1, H);

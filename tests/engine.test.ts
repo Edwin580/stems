@@ -142,6 +142,11 @@ describe.each([
     const back = planner.next()!;
     expect(back.toBeat!).toBeGreaterThanOrEqual(sec.start);
     expect(back.toBeat!).toBeLessThan(sec.end);
+    // A seek into the tail after the last beat still yields a playable jump.
+    planner.resetFrom(src.length - 1);
+    const tail = planner.next()!;
+    expect(Number.isFinite(tail.at)).toBe(true);
+    expect(tail.toBeat!).toBeLessThan(sec.end);
   });
 
   it('keeps Endless inside a chosen section and wraps from its end to its start', () => {

@@ -105,16 +105,37 @@ export class Player {
 
   get stemNames(): string[] { return this.stems ? this.stems.names : ['mix']; }
 
+  /**
+   * Stop and forget the current song. Anything still running for it
+   * (decode, analysis, separation) sees a stale token and is dropped.
+   */
+  reset() {
+    this.loadToken++;
+    this.stop();
+    for (const w of this.workers) w.terminate();
+    this.workers.clear();
+    this.source = null;
+    this.analysis = null;
+    this.planner = null;
+    this.stems = null;
+    this.vocalPenalty = null;
+    this.lyricPenalty = null;
+  }
+  /** Separation workers in flight, terminated by reset(). */
+  private workers = new Set<Worker>();
+
   async loadFile(file: File | Blob): Promise<void> {
+    const token = ++this.loadToken;
     const buf = await file.arrayBuffer();
     const hashP = cache.hashBytes(buf.slice(0));
     const audio = await this.ctx.decodeAudioData(buf);
+    const hash = await hashP;
+    if (token !== this.loadToken) return;
     const channels = Array.from({ length: Math.min(2, audio.numberOfChannels) }, (_, c) => audio.getChannelData(c));
-    await this.loadChannels(channels, await hashP);
+    await this.loadChannels(channels, hash, token);
   }
 
-  async loadChannels(channels: Float32Array[], hash = ''): Promise<void> {
-    const token = ++this.loadToken;
+  async loadChannels(channels: Float32Array[], hash = '', token = ++this.loadToken): Promise<void> {
     this.stop();
     const sampleRate = this.ctx.sampleRate;
     channels = channels.map(shareable);
@@ -164,6 +185,8 @@ export class Player {
     this.settings = { ...DEFAULT_SETTINGS, threshold: analysis.suggestedThreshold };
     this.rebuild();
     this.events.onAnalysis?.(fromCache);
+    // Stems or lyrics that arrived before the analysis.
+    if (this.stems || this.lyricPenalty) void this.applyVocalAwareness();
   }
 
   private downbeats(): Int32Array {
@@ -179,7 +202,8 @@ export class Player {
     const prev = this.settings.loop;
     this.loops = findLoops(a, src, this.coarse, { minBeats: 8 * a.meter.beatsPerBar, maxCandidates: 8, lengthBias: 0.04, fade, autoFade: this.settings.autoFade });
     const same = prev && this.loops.find((l) => l.startBeat === prev.startBeat && l.endBeat === prev.endBeat);
-    this.settings.loop = same ?? (prev && this.settings.mode === 'loop' ? prev : this.loops[0] ?? null);
+    // A section or handle loop isn't among the candidates: rebuild it with the current fade.
+    this.settings.loop = same ?? (prev && this.settings.mode === 'loop' ? this.loopFor({ start: prev.startBeat, end: prev.endBeat }) : this.loops[0] ?? null);
     this.planner = new Planner(a, src, this.coarse, this.settings);
     this.replan();
   }
@@ -379,15 +403,18 @@ export class Player {
     if (!stems) {
       const runWorker = (wasmOnly: boolean) => new Promise<{ stems: Stems; backend: string; vocalPenalty?: Float32Array }>((resolve, reject) => {
         const w = new Worker(new URL('./separation.worker.ts', import.meta.url), { type: 'module' });
+        this.workers.add(w);
         w.onmessage = (e: MessageEvent<FromSeparation>) => {
           const m = e.data;
+          if (token !== this.loadToken) return;
           if (m.type === 'progress') this.events.onStemsProgress?.(m.stage, m.fraction);
           else {
             w.terminate();
+            this.workers.delete(w);
             if (m.type === 'done') resolve({ stems: m.stems, backend: m.backend, vocalPenalty: m.vocalPenalty }); else reject(new Error(m.message));
           }
         };
-        w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'Separation worker failed')); };
+        w.onerror = (e) => { w.terminate(); this.workers.delete(w); reject(new Error(e.message || 'Separation worker failed')); };
         const msg: ToSeparation = {
           method, channels: src.channels, sampleRate: src.sampleRate, modelUrl, beats: this.analysis?.beats, hash: this.fileHash || undefined,
           ...(wasmOnly ? { wasmOnly: true } : {}),
@@ -406,13 +433,14 @@ export class Player {
         this.events.onStemsProgress?.('Backend failed to start; retrying with WASM', 0);
         res = await runWorker(true);
       }
+      if (token !== this.loadToken) return;
       stems = res.stems;
       backend = res.backend;
       this.vocalPenalty = res.vocalPenalty ?? null;
     } else {
+      if (token !== this.loadToken) return;
       this.vocalPenalty = null;
     }
-    if (token !== this.loadToken) return;
     // Already shared when the worker produced them; cached stems still need copying.
     stems = { ...stems, channels: stems.channels.map((g) => g.map(shareable)) };
     this.stems = stems;

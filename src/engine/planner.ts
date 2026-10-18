@@ -288,7 +288,8 @@ export class Planner {
   /** From beat `i` outside the cycle, the cleanest seam at the next bar line back into it. */
   private reenter(i: number): Jump {
     const a = this.a, n = a.beats.length, sec = this.section!;
-    let from = i;
+    // Past the last beat (a seek into the fade-out): leave from the last beat that has a successor.
+    let from = Math.min(i, n - 2);
     while (from < n - 2 && !this.isBarEnd(from)) from++;
     let to = sec.start, bestCost = Infinity;
     for (let j = sec.start; j < sec.end; j++) {
