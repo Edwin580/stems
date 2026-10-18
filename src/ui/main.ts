@@ -1,3 +1,6 @@
+import '@fontsource-variable/inter';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
 import { clearCache } from '../audio/cache';
 import { addSong, fetchAudioFile, listSongs, matchSongs, removeSong, songFile, takeSharedFiles, updateSong, type LibrarySong } from '../audio/library';
 import { encodeMp3InWorker } from '../audio/mp3-client';
@@ -869,7 +872,7 @@ function updateMediaSession() {
 const fileInput = $<HTMLInputElement>('file');
 $('pick').addEventListener('click', () => fileInput.click());
 $('another').addEventListener('click', () => showLibrary());
-$('now-playing').addEventListener('click', () => { show('home', false); show('app'); window.scrollTo({ top: 0 }); });
+$('now-playing').addEventListener('click', () => { show('home', false); show('app'); show('another'); window.scrollTo({ top: 0 }); });
 fileInput.addEventListener('change', () => { const fs = [...(fileInput.files ?? [])]; fileInput.value = ''; void addFiles(fs); });
 $('demo').addEventListener('click', () => load({ demo: true }));
 const drop = $('drop');
@@ -907,6 +910,7 @@ async function openSong(id: string) {
 
 function showLibrary() {
   show('app', false);
+  show('another', false);
   show('home');
   void renderLibrary();
   window.scrollTo({ top: 0 });
