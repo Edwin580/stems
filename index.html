@@ -14,7 +14,7 @@
   <body>
     <header>
       <div class="brand"><span class="logo" aria-hidden="true">∞</span> stems</div>
-      <button id="another" class="hidden">Open file</button>
+      <button id="another" class="hidden">Library</button>
     </header>
 
     <main>
@@ -22,13 +22,33 @@
       <section id="error" class="card error hidden" role="alert"></section>
 
       <section id="home" class="home">
-        <h1>Loop any song without audible seams.</h1>
-        <p class="lede">stems maps a track's beats, bars and repeated sections, then plays it indefinitely by splicing between bars that match. Loop a section, separate the stems, or export a long render.</p>
-        <div id="drop" class="drop">
-          <input id="file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.opus,.aac" hidden />
-          <button id="pick" class="primary big">Open audio file</button>
-          <div class="sub">or drop one here. MP3, M4A, WAV, FLAC or OGG.</div>
+        <button id="now-playing" class="now-playing hidden">
+          <span class="sub">Now playing</span>
+          <b id="now-title"></b>
+          <span class="sub">Back to the player</span>
+        </button>
+        <div id="hero">
+          <h1>Loop any song without audible seams.</h1>
+          <p class="lede">stems maps a track's beats, bars and repeated sections, then plays it indefinitely by splicing between bars that match. Loop a section, separate the stems, or export a long render.</p>
         </div>
+        <div id="drop" class="drop">
+          <input id="file" type="file" accept="audio/*,.mp3,.m4a,.wav,.flac,.ogg,.opus,.aac" multiple hidden />
+          <button id="pick" class="primary big">Add audio files</button>
+          <div class="sub">or drop them here. MP3, M4A, WAV, FLAC or OGG. Songs are kept in your library on this device.</div>
+        </div>
+        <form id="url-form" class="search url-form">
+          <input id="url" type="url" inputmode="url" placeholder="Or paste a direct link to an audio file" aria-label="Link to an audio file" autocomplete="off" />
+          <button type="submit">Add</button>
+        </form>
+        <div id="url-status" class="sub" role="status"></div>
+
+        <section id="library" class="library hidden" aria-label="Library">
+          <div class="lib-head">
+            <h2>Library <span id="lib-count" class="sub"></span></h2>
+            <input id="lib-q" type="search" placeholder="Search your songs" aria-label="Search your songs" autocomplete="off" />
+          </div>
+          <ol id="lib-list" class="lib"></ol>
+        </section>
         <button id="demo" class="link">Load the demo track</button>
       </section>
 

@@ -7,7 +7,7 @@
 //    Pages): unless the page has stored the opt-out marker below, same-origin
 //    responses get COOP/COEP/CORP headers, unlocking SharedArrayBuffer and
 //    multi-threaded WASM. See src/ui/isolation.ts.
-const CACHE = 'stems-shell-v4';
+const CACHE = 'stems-shell-v5';
 const SCOPE = new URL(self.registration.scope);
 const COI_CACHE = 'stems-coi';
 const COI_MARKER = new URL('./__coi-off', SCOPE).href;
@@ -33,9 +33,29 @@ function isolate(res) {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
+// System Share menu (installed app, Android): park the shared files in a
+// cache the page empties on load, then open the page.
+const SHARE_PATH = new URL('./share-target', SCOPE).pathname;
+async function receiveShare(req) {
+  const form = await req.formData();
+  const cache = await caches.open('stems-inbox');
+  const stamp = Date.now();
+  let i = 0;
+  for (const f of form.getAll('audio')) {
+    if (typeof f === 'string') continue;
+    const key = new URL(`./__inbox/${stamp}-${String(i++).padStart(3, '0')}/${encodeURIComponent(f.name || 'shared audio')}`, SCOPE);
+    await cache.put(new Request(key), new Response(f, { headers: { 'content-type': f.type || 'audio/mpeg' } }));
+  }
+  return Response.redirect(new URL('./?shared=1', SCOPE).href, 303);
+}
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
+  if (req.method === 'POST' && url.pathname === SHARE_PATH) {
+    e.respondWith(receiveShare(req).catch(() => Response.redirect(new URL('./', SCOPE).href, 303)));
+    return;
+  }
   if (req.method !== 'GET' || url.origin !== self.location.origin) return;
   // A production worker at the site root must not serve PR previews (and vice versa).
   const rel = url.pathname.slice(SCOPE.pathname.length);

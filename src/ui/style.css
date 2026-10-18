@@ -80,6 +80,27 @@ input[type=checkbox] { accent-color: var(--accent); width: 18px; height: 18px; m
 }
 .drop.over { border-color: var(--accent); background: var(--loop-bg); }
 #demo { display: block; margin: 12px auto 0; }
+.drop.compact { padding: 14px; grid-template-columns: auto 1fr; justify-items: start; align-items: center; text-align: left; gap: 12px; }
+.drop.compact .big { font-size: 15px; padding: 10px 16px; border-radius: 10px; }
+.url-form { margin-top: 12px; }
+#url-status { margin-top: 6px; min-height: 1.2em; }
+.now-playing {
+  display: grid; gap: 2px; width: 100%; text-align: left; margin: 8px 0 4px; padding: 12px 14px;
+  border-color: var(--accent); background: var(--loop-bg); border-radius: 14px;
+}
+.now-playing b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library { margin-top: 22px; }
+.lib-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.lib-head h2 { margin: 0; }
+.lib-head input { flex: 1; min-width: 160px; max-width: 280px; }
+.lib { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.lib li { display: flex; align-items: center; gap: 10px; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+.lib li.current { border-color: var(--accent); }
+.lib .open { flex: 1; min-width: 0; display: grid; gap: 1px; text-align: left; border: 0; padding: 10px 12px; border-radius: 12px; }
+.lib .open b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib .open span { color: var(--sub); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib .rm { border: 0; color: var(--sub); font-size: 13px; padding: 10px 12px; }
+.lib .empty { padding: 10px 12px; color: var(--sub); border-style: dashed; }
 
 /* Player */
 .who { min-width: 0; margin-bottom: 10px; }
