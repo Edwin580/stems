@@ -1,4 +1,5 @@
 import { clearCache } from '../audio/cache';
+import { addSong, fetchAudioFile, listSongs, matchSongs, removeSong, songFile, takeSharedFiles, updateSong, type LibrarySong } from '../audio/library';
 import { encodeMp3InWorker } from '../audio/mp3-client';
 import { DEFAULT_MODEL_URL, Player, sharedMemory } from '../audio/player';
 import { synthSong } from '../engine/demo';
@@ -98,13 +99,23 @@ function waitForSource(p: Player, done: Promise<void>): Promise<void> {
   });
 }
 
-async function load(source: { file?: File; demo?: boolean }) {
+/** Library id of the loaded song (empty for the demo). */
+let currentSongId = '';
+
+async function load(source: { file?: File; demo?: boolean; libraryId?: string }) {
   show('error', false);
   show('home', false);
   show('another');
   try {
+    currentSongId = source.libraryId ?? '';
+    if (source.file && !currentSongId) {
+      try { currentSongId = (await addSong(source.file)).id; } catch { /* storage full or blocked: play it anyway */ }
+    }
     const p = await ensurePlayer();
+    // Drop the previous song's state before the UI resets (it reads both).
     p.source = null;
+    p.analysis = null;
+    p.planner = null;
     show('app');
     show('aprog');
     resetSongUi();
@@ -124,6 +135,8 @@ async function load(source: { file?: File; demo?: boolean }) {
     if (p.source) onDecoded(p);
     await loaded;
   } catch (err) {
+    // A file that can't be decoded doesn't belong in the library.
+    if (source.file && !source.libraryId && currentSongId) { void removeSong(currentSongId).then(() => renderLibrary()); currentSongId = ''; }
     show('app', false);
     show('another', false);
     show('home');
@@ -154,6 +167,7 @@ function resetSongUi() {
 
 function onDecoded(p: Player) {
   viz.setSong(p.source!.channels, null);
+  if (currentSongId) void updateSong(currentSongId, { duration: p.source!.length / p.source!.sampleRate, playedAt: Date.now() }).then(() => renderLibrary());
   $<HTMLButtonElement>('play').disabled = false;
   updateMediaSession();
   updateModeHint();
@@ -432,7 +446,7 @@ $('lyric-align').addEventListener('change', () => renderLoops());
 function renderLoops() {
   const p = player;
   const ol = $('loops');
-  if (!p?.analysis) return;
+  if (!p?.analysis || !p.source) return;
   ol.innerHTML = '';
   const loops = displayedLoops();
   $('lyric-align-row').classList.toggle('hidden', lyricLines.length === 0);
@@ -801,16 +815,98 @@ function updateMediaSession() {
 
 const fileInput = $<HTMLInputElement>('file');
 $('pick').addEventListener('click', () => fileInput.click());
-$('another').addEventListener('click', () => { player?.pause(); updatePlayButton(); fileInput.click(); });
-fileInput.addEventListener('change', () => { const f = fileInput.files?.[0]; if (f) void load({ file: f }); fileInput.value = ''; });
+$('another').addEventListener('click', () => showLibrary());
+$('now-playing').addEventListener('click', () => { show('home', false); show('app'); window.scrollTo({ top: 0 }); });
+fileInput.addEventListener('change', () => { const fs = [...(fileInput.files ?? [])]; fileInput.value = ''; void addFiles(fs); });
 $('demo').addEventListener('click', () => load({ demo: true }));
 const drop = $('drop');
 for (const ev of ['dragenter', 'dragover']) document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
 for (const ev of ['dragleave', 'drop']) document.addEventListener(ev, (e) => { e.preventDefault(); if (ev === 'drop' || e.target === drop) drop.classList.remove('over'); });
 document.addEventListener('drop', (e) => {
-  const f = (e as DragEvent).dataTransfer?.files?.[0];
-  if (f) void load({ file: f });
+  const fs = [...((e as DragEvent).dataTransfer?.files ?? [])];
+  if (fs.length) void addFiles(fs);
 });
+
+// ---- Library ------------------------------------------------------------------------------
+
+let librarySongs: LibrarySong[] = [];
+
+/** Add files to the library and open the first one. */
+async function addFiles(files: File[]) {
+  const audio = files.filter((f) => /^audio\//.test(f.type) || /\.(mp3|m4a|aac|wav|flac|ogg|oga|opus|webm)$/i.test(f.name));
+  if (!audio.length) { showError('Those files are not audio. MP3, M4A, WAV, FLAC and OGG are supported.'); return; }
+  if (audio.length === 1) { void load({ file: audio[0] }); return; }
+  const status = $('url-status');
+  let first: LibrarySong | null = null;
+  for (const [i, f] of audio.entries()) {
+    status.textContent = `Adding ${i + 1} of ${audio.length}: ${f.name}`;
+    try { const s = await addSong(f); first ??= s; } catch { /* skip unreadable files */ }
+  }
+  status.textContent = `Added ${audio.length} songs to the library.`;
+  await renderLibrary();
+  if (first) void openSong(first.id);
+}
+
+async function openSong(id: string) {
+  const f = await songFile(id);
+  if (f) void load({ file: f, libraryId: id });
+}
+
+function showLibrary() {
+  show('app', false);
+  show('home');
+  void renderLibrary();
+  window.scrollTo({ top: 0 });
+}
+
+/** Redraw the library; `reload` re-reads it from storage (typing in search only filters). */
+async function renderLibrary(reload = true) {
+  if (reload) { try { librarySongs = await listSongs(); } catch { librarySongs = []; } }
+  const playing = !!player?.source;
+  show('library', librarySongs.length > 0);
+  show('hero', librarySongs.length === 0 && !playing);
+  $('drop').classList.toggle('compact', librarySongs.length > 0);
+  show('now-playing', playing);
+  $('now-title').textContent = [song.title, song.artist].filter(Boolean).join(' · ');
+  $('lib-count').textContent = librarySongs.length ? `${librarySongs.length}` : '';
+  const list = $('lib-list');
+  list.innerHTML = '';
+  const shown = matchSongs(librarySongs, $<HTMLInputElement>('lib-q').value);
+  if (!shown.length && librarySongs.length) list.innerHTML = '<li class="empty">No songs match.</li>';
+  for (const s of shown) {
+    const li = document.createElement('li');
+    li.classList.toggle('current', s.id === currentSongId);
+    const meta = [s.artist, s.duration ? fmt(s.duration) : '', `${(s.size / 1e6).toFixed(1)} MB`].filter(Boolean).join(' · ');
+    li.innerHTML = `<button class="open"><b>${esc(s.title || s.name)}</b><span>${esc(meta)}</span></button><button class="rm" aria-label="Remove ${esc(s.title || s.name)} from the library">Remove</button>`;
+    li.querySelector<HTMLButtonElement>('.open')!.onclick = () => (s.id === currentSongId && player?.source ? $('now-playing').click() : void openSong(s.id));
+    li.querySelector<HTMLButtonElement>('.rm')!.onclick = async () => { await removeSong(s.id); if (s.id === currentSongId) currentSongId = ''; void renderLibrary(); };
+    list.appendChild(li);
+  }
+}
+$('lib-q').addEventListener('input', () => { void renderLibrary(false); });
+
+$<HTMLFormElement>('url-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $<HTMLInputElement>('url');
+  const status = $('url-status');
+  if (!input.value.trim()) return;
+  status.textContent = 'Downloading';
+  try {
+    const f = await fetchAudioFile(input.value, (fr) => { status.textContent = `Downloading ${Math.round(fr * 100)}%`; });
+    status.textContent = '';
+    input.value = '';
+    void load({ file: f });
+  } catch (err) {
+    status.textContent = errText(err);
+  }
+});
+
+// Files shared to stems from the system Share menu (installed app, see public/sw.js).
+if (new URLSearchParams(location.search).has('shared')) {
+  history.replaceState(null, '', location.pathname);
+  void takeSharedFiles().then((fs) => { if (fs.length) void addFiles(fs); });
+}
+void renderLibrary();
 
 $('clear-cache').addEventListener('click', async () => {
   await clearCache();
@@ -848,8 +944,7 @@ mt.addEventListener('change', () => { void setIsolation(mt.checked); });
 type LaunchParams = { files: { getFile(): Promise<File> }[] };
 const lq = (window as unknown as { launchQueue?: { setConsumer(cb: (p: LaunchParams) => void): void } }).launchQueue;
 lq?.setConsumer(async (params) => {
-  const h = params.files[0];
-  if (h) void load({ file: await h.getFile() });
+  if (params.files.length) void addFiles(await Promise.all(params.files.map((h) => h.getFile())));
 });
 
 // ---- Drawing --------------------------------------------------------------------------------
