@@ -205,7 +205,7 @@ export class Visualizer {
       }
     }
     // Locked stems run their own loop: show their playheads too.
-    g.font = `${11 * this.dpr}px ui-sans-serif, system-ui, sans-serif`;
+    g.font = `${11 * this.dpr}px 'IBM Plex Mono', ui-monospace, monospace`;
     lockedHeads.forEach((h, k) => {
       const lx = Math.round(this.x(h.pos));
       g.fillStyle = css('--accent');
