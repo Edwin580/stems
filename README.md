@@ -9,7 +9,7 @@ Pick a song and it plays forever. stems is an infinite jukebox built so you can'
   - Seams avoid moments where someone is singing, and each stem gets its own crossfade.
   - You can mute or solo stems, or use the instrumental and a cappella presets.
   - You can **lock** a stem to a loop while the rest of the song wanders.
-- **Lyrics:** finds synced lyrics for the song on [LRCLIB](https://lrclib.net) (or load a `.lrc` file). They highlight as the song plays, tapping a line jumps there, and loops can be ranked to start on a lyric line.
+- **Lyrics:** finds synced lyrics for the song on [LRCLIB](https://lrclib.net) (or load a `.lrc` file). They highlight in time with what you hear (output latency is compensated, and a timing nudge handles files cut to a different master), tapping a line jumps there, jumps are kept between sung lines, and loops can be ranked to start on a lyric line.
 - **Background playback:** the engine's output plays through a media element, so it keeps going with the screen locked or in another tab, with lock-screen and headphone controls. Jumps are planned well ahead in the AudioWorklet, so a throttled page doesn't interrupt the music.
 - **Extras:**
   - Save a long version (N minutes, optionally ending on the song's real outro) as MP3 or WAV, through your current stem mix.

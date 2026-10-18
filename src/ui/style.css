@@ -166,10 +166,13 @@ input[type=checkbox] { accent-color: var(--accent); width: 18px; height: 18px; m
 .results .meta { flex: 1; min-width: 0; color: var(--sub); font-size: 13px; overflow-wrap: anywhere; }
 .results .meta b { color: var(--text); font-weight: 600; }
 #lyr-status { margin-top: 8px; }
-.lyrics { max-height: 46vh; overflow-y: auto; margin-top: 10px; display: grid; gap: 2px; position: relative; scroll-behavior: smooth; }
+.lyrics { max-height: 46vh; overflow-y: auto; margin-top: 10px; display: grid; gap: 2px; position: relative; }
 .lyrics .line { display: flex; gap: 10px; padding: 5px 8px; border-radius: 8px; color: var(--sub); cursor: pointer; font-size: 16px; }
 .lyrics .line .t { font-variant-numeric: tabular-nums; min-width: 40px; font-size: 12px; padding-top: 3px; }
 .lyrics .line.active { color: var(--text); background: var(--loop-bg); font-weight: 600; }
+.lyr-timing { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.lyr-timing button { padding: 4px 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.lyr-timing #lyr-offset { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
 .row-left { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 
 /* Save / Tune */
