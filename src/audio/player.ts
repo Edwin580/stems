@@ -124,6 +124,9 @@ export class Player {
     this.planner = null;
     this.stems = null;
     this.vocalPenalty = null;
+    this.lyricPenalty = null;
+    this.lastShown = 0;
+    this.recentJump = null;
     this.loops = [];
     this.gains = [1];
     this.locked = [false];
@@ -193,6 +196,7 @@ export class Player {
       case 'jumped': {
         const idx = this.queued.findIndex((j) => j.id === m.id);
         const jump = idx >= 0 ? this.queued[idx] : null;
+        if (jump) { this.recentJump = { time: m.time, at: jump.at }; this.lastShown = 0; }
         if (idx >= 0) this.queued.splice(0, idx + 1);
         if (m.id > 0) this.jumpCount++;
         if (jump) this.events.onJump?.(jump);
@@ -315,6 +319,8 @@ export class Player {
   /** Click-free seek to a sample position, then continue planning from there. */
   seek(sample: number) {
     if (!this.source) return;
+    this.lastShown = 0;
+    this.recentJump = null;
     const fade = Math.round(0.03 * this.ctx.sampleRate);
     const to = Math.max(fade, Math.min(this.source.length - 1, sample));
     this.send({ type: 'seek', to, fade, id: this.nextSeekId-- });
@@ -331,7 +337,30 @@ export class Player {
   position(): number {
     if (!this.playing) return this.lastPos;
     const dt = Math.max(0, this.ctx.currentTime - this.lastPosTime);
-    return this.lastPos + Math.min(dt, 0.1) * this.ctx.sampleRate;
+    let x = this.lastPos + Math.min(dt, 0.1) * this.ctx.sampleRate;
+    // Reports arrive with a little timing jitter, which made the estimate
+    // step back a few ms now and then (and a lyric line flicker at its
+    // boundary). Real jumps move much further than this.
+    if (x < this.lastShown && this.lastShown - x < 0.05 * this.ctx.sampleRate) x = this.lastShown;
+    this.lastShown = x;
+    return x;
+  }
+  private lastShown = 0;
+  private recentJump: { time: number; at: number } | null = null;
+
+  /**
+   * The sample being heard right now: the play position minus the output
+   * latency, including the moments right after a jump, when the speakers are
+   * still playing the audio from before it. Lyrics and the playhead follow
+   * this, so they line up with the sound rather than run ahead of it.
+   */
+  audiblePosition(extraLatencySec = 0): number {
+    const sr = this.ctx.sampleRate;
+    const lat = (this.ctx.outputLatency || 0) + (this.ctx.baseLatency || 0) + extraLatencySec;
+    const now = this.ctx.currentTime - lat;
+    const j = this.recentJump;
+    if (j && this.playing && now < j.time && j.time - now < 1) return Math.max(0, j.at - (j.time - now) * sr);
+    return Math.max(0, this.position() - (this.playing ? lat * sr : 0));
   }
 
   get queue(): readonly Jump[] { return this.queued; }
@@ -396,6 +425,14 @@ export class Player {
 
   /** Per-beat vocal seam penalty for the current stems, computed by the separation worker. */
   private vocalPenalty: Float32Array | null = null;
+  /** Per-beat seam penalty from synced lyrics (keeps jumps between sung lines). */
+  private lyricPenalty: Float32Array | null = null;
+
+  /** Use synced lyrics to keep jumps between sung lines (null clears it). */
+  setLyricPenalty(pen: Float32Array | null): Promise<void> {
+    this.lyricPenalty = pen;
+    return this.applyVocalAwareness();
+  }
 
   /** Re-score seams with (or without) the vocal-activity penalty. */
   setVocalAware(on: boolean): Promise<void> {
@@ -415,6 +452,10 @@ export class Player {
         this.vocalPenalty = vocalBoundaryPenalty(this.stems!.channels[vi], this.source.channels, this.analysis.beats, this.source.sampleRate);
       }
       pen = this.vocalPenalty;
+    }
+    if (this.lyricPenalty) {
+      const lyr = this.lyricPenalty;
+      pen = pen ? pen.map((v, i) => Math.max(v, lyr[i] ?? 0)) : lyr;
     }
     if (!pen && !this.analysis.boundaryPenalty) return;
     const token = this.loadToken;

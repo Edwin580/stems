@@ -187,10 +187,31 @@ input[type=checkbox] { accent-color: var(--accent); width: 18px; height: 18px; m
 .results .meta { flex: 1; min-width: 0; color: var(--sub); font-size: 13px; overflow-wrap: anywhere; }
 .results .meta b { color: var(--text); font-weight: 600; }
 #lyr-status { margin-top: 8px; }
-.lyrics { max-height: 46vh; overflow-y: auto; margin-top: 10px; display: grid; gap: 2px; position: relative; scroll-behavior: smooth; }
-.lyrics .line { display: flex; gap: 10px; padding: 5px 8px; border-radius: 8px; color: var(--sub); cursor: pointer; font-size: 16px; }
-.lyrics .line .t { font-variant-numeric: tabular-nums; min-width: 40px; font-size: 12px; padding-top: 3px; }
-.lyrics .line.active { color: var(--text); background: var(--loop-bg); font-weight: 600; }
+/* Karaoke view: no timestamps, the sung line centred, the rest fading out. */
+.lyr-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lyr-head #lyr-source { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lyr-timing { display: inline-flex; align-items: center; gap: 4px; }
+.lyr-timing button { width: 30px; height: 30px; padding: 0; border-radius: 50%; font-size: 16px; line-height: 1; }
+.lyr-timing #lyr-offset { min-width: 46px; text-align: center; font-variant-numeric: tabular-nums; }
+.lyrics {
+  height: min(56vh, 460px); overflow-y: auto; margin-top: 8px; position: relative; overscroll-behavior: contain;
+  padding: calc(min(56vh, 460px) / 2 - 24px) 2px; scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent);
+  mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent);
+}
+.lyrics::-webkit-scrollbar { display: none; }
+.lyrics .line {
+  display: block; padding: 7px 0; font-size: 22px; line-height: 1.3; font-weight: 700; letter-spacing: -0.01em;
+  color: var(--text); opacity: 0.28; cursor: pointer; transition: opacity 0.35s ease;
+}
+.lyrics .line.near { opacity: 0.5; }
+.lyrics .line.active { opacity: 1; }
+.now-line {
+  display: grid; gap: 2px; width: 100%; text-align: left; margin-top: 10px; padding: 10px 12px;
+  border: 0; border-radius: 12px; background: var(--loop-bg);
+}
+#now-cur { font-weight: 650; font-size: 16px; min-height: 1.4em; }
+#now-next { color: var(--sub); font-size: 14px; min-height: 1.3em; }
 .row-left { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
 
 /* Save / Tune */
