@@ -46,17 +46,6 @@
         <button id="demo" class="link">Load the demo track</button>
       </section>
 
-      <section id="search" class="hidden" aria-label="Find music">
-        <h1 class="view-title">Find music</h1>
-        <p class="lede small">Full tracks that artists publish for streaming on Audius. Picking one downloads the MP3 into your library.</p>
-        <form id="music-form" class="search">
-          <input id="music-q" type="search" placeholder="Artist, track or genre" aria-label="Search music" autocomplete="off" enterkeyhint="search" />
-          <button class="primary" type="submit">Search</button>
-        </form>
-        <div id="music-status" class="sub" role="status"></div>
-        <ol id="music-results" class="tracks"></ol>
-      </section>
-
       <section id="app" class="hidden">
         <div class="card player">
           <div class="who">
@@ -258,10 +247,6 @@
       <button data-view="home" aria-current="page">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h3v14H4zM9.5 5h3v14h-3zM15 5.6l2.9-.8 3.6 13.6-2.9.8z" fill="currentColor"/></svg>
         <span>Library</span>
-      </button>
-      <button data-view="search">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 0 1 5.2 10.4l4.4 4.4-1.4 1.4-4.4-4.4A6.5 6.5 0 1 1 10.5 4zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z" fill="currentColor"/></svg>
-        <span>Find music</span>
       </button>
       <button data-view="app" disabled>
         <span id="tab-eq" class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>

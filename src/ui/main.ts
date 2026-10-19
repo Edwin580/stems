@@ -2,7 +2,6 @@ import '@fontsource-variable/inter';
 import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
 import { clearCache, getLyricSearch, getSongLyrics, putLyricSearch, putSongLyrics } from '../audio/cache';
-import { searchTracks, trackAudioUrl, trackFileName, type TrackHit } from '../audio/musicsearch';
 import { addSong, fetchAudioFile, listSongs, matchSongs, removeSong, songFile, takeSharedFiles, updateSong, type LibrarySong } from '../audio/library';
 import { encodeMp3InWorker } from '../audio/mp3-client';
 import { DEFAULT_MODEL_URL, Player, sharedMemory } from '../audio/player';
@@ -998,13 +997,13 @@ $('pick').addEventListener('click', () => fileInput.click());
 
 // ---- Views (tab bar) ------------------------------------------------------------------------
 
-type View = 'home' | 'search' | 'app';
+type View = 'home' | 'app';
 const scrollPos: Partial<Record<View, number>> = {};
 let view: View = 'home';
 
 function go(v: View) {
   if (v !== view) scrollPos[view] = window.scrollY;
-  for (const k of ['home', 'search', 'app'] as const) show(k, k === v);
+  for (const k of ['home', 'app'] as const) show(k, k === v);
   document.querySelectorAll<HTMLButtonElement>('#tabbar [data-view]').forEach((b) => {
     if (b.dataset.view === v) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
@@ -1065,49 +1064,6 @@ async function openSong(id: string) {
   const f = await songFile(id);
   const e = librarySongs.find((s) => s.id === id);
   if (f) void load({ file: f, libraryId: id, info: e && e.title ? { title: e.title, artist: e.artist } : undefined });
-}
-
-// ---- Find music ---------------------------------------------------------------------------
-
-$<HTMLFormElement>('music-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const q = $<HTMLInputElement>('music-q');
-  q.blur();
-  const status = $('music-status');
-  const list = $('music-results');
-  status.textContent = 'Searching…';
-  list.innerHTML = '';
-  try {
-    const hits = await searchTracks(q.value);
-    status.textContent = hits.length ? '' : 'Nothing streamable matches. Try an artist name or a genre.';
-    for (const t of hits) list.appendChild(trackRow(t));
-  } catch (err) {
-    status.textContent = errText(err);
-  }
-});
-
-function trackRow(t: TrackHit): HTMLLIElement {
-  const li = document.createElement('li');
-  const meta = [t.artist, fmt(t.duration), t.genre].filter(Boolean).join(' · ');
-  li.innerHTML = `${t.artwork ? `<img src="${esc(t.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer" crossorigin="anonymous" />` : '<span class="art"></span>'}
-    <span class="meta"><b>${esc(t.title)}</b><span>${esc(meta)}</span></span>
-    <button>Add</button>`;
-  const btn = li.querySelector('button')!;
-  btn.onclick = async () => {
-    btn.disabled = true;
-    const status = $('music-status');
-    try {
-      const f = await fetchAudioFile(trackAudioUrl(t.id), (fr) => { btn.textContent = `${Math.round(fr * 100)}%`; }, fetch, trackFileName(t));
-      btn.textContent = 'Added';
-      status.textContent = '';
-      void load({ file: f, info: { title: t.title, artist: t.artist } });
-    } catch (err) {
-      btn.disabled = false;
-      btn.textContent = 'Add';
-      status.textContent = `${t.title}: ${errText(err)}`;
-    }
-  };
-  return li;
 }
 
 /** Redraw the library; `reload` re-reads it from storage (typing in search only filters). */

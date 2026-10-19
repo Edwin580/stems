@@ -130,10 +130,10 @@ footer { color: var(--sub); font-size: 13px; padding-top: 40px; padding-bottom: 
 #demo { display: inline-block; margin: 18px 0 0; }
 .url-form { margin-top: 10px; }
 #url-status { margin-top: 6px; min-height: 1.3em; }
-/* Bottom tab bar: Library, Find music, Player. */
+/* Bottom tab bar: Library, Player. */
 .tabbar {
   position: fixed; z-index: 10; left: 0; right: 0; bottom: 0;
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(2, 1fr);
   padding: 4px max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   background: color-mix(in srgb, var(--bg) 86%, transparent); border-top: 1px solid var(--line);
   -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4);
@@ -162,18 +162,6 @@ body { padding-bottom: calc(68px + env(safe-area-inset-bottom)); }
 .lib .lib-play svg { width: 18px; height: 18px; }
 @media (hover: hover) { .lib .lib-play:hover:not(:disabled) { background: var(--primary-bg); filter: brightness(1.06); } }
 
-/* Find music */
-.view-title { font-size: 28px; margin: 6px 0 6px; }
-.lede.small { font-size: 15px; margin-bottom: 18px; }
-#music-status { margin: 10px 0 4px; min-height: 1.3em; }
-.tracks { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
-.tracks li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
-.tracks img, .tracks .art { width: 48px; height: 48px; border-radius: 6px; flex: none; object-fit: cover; background: var(--surface-2); }
-.tracks .meta { flex: 1; min-width: 0; display: grid; gap: 2px; }
-.tracks .meta b { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tracks .meta span { color: var(--sub); font-size: 12px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tracks button { flex: none; padding: 8px 14px; font-size: 14px; background: none; border: 1px solid var(--line-strong); color: var(--text); font-weight: 550; }
-.tracks .empty { color: var(--sub); padding: 12px 0; }
 .library { margin-top: 30px; }
 .lib-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
 .lib-head h2 { margin: 0; }
