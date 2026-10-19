@@ -2,6 +2,7 @@ import '@fontsource-variable/inter';
 import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
 import { clearCache, getLyricSearch, getSongLyrics, putLyricSearch, putSongLyrics } from '../audio/cache';
+import { searchTracks, trackAudioUrl, trackFileName, type TrackHit } from '../audio/musicsearch';
 import { addSong, fetchAudioFile, listSongs, matchSongs, removeSong, songFile, takeSharedFiles, updateSong, type LibrarySong } from '../audio/library';
 import { encodeMp3InWorker } from '../audio/mp3-client';
 import { DEFAULT_MODEL_URL, Player, sharedMemory } from '../audio/player';
@@ -33,6 +34,13 @@ let song: SongInfo = { title: '', artist: '' };
 let tab: Tab = 'loops';
 let pendingShare: ShareState | null = decodeShare(location.hash);
 const viz = new Visualizer($<HTMLCanvasElement>('viz'));
+function setLayout(l: 'wave' | 'circle') {
+  try { localStorage.setItem('stems.layout', l); } catch { /* ignore */ }
+  document.querySelectorAll<HTMLButtonElement>('[data-layout]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.layout === l)));
+  viz.setLayout(l);
+}
+document.querySelectorAll<HTMLButtonElement>('[data-layout]').forEach((b) => b.addEventListener('click', () => setLayout(b.dataset.layout as 'wave' | 'circle')));
+setLayout((() => { try { return localStorage.getItem('stems.layout') === 'circle' ? 'circle' : 'wave'; } catch { return 'wave'; } })());
 
 function show(id: string, on = true) { $(id).classList.toggle('hidden', !on); }
 const trackName = () => [song.artist, song.title].filter(Boolean).join(' - ') || 'stems';
@@ -71,6 +79,7 @@ if (pendingShare) {
 async function ensurePlayer(): Promise<Player> {
   if (player) return player;
   player = await Player.create();
+  player.seamless = $<HTMLInputElement>('seamless').checked;
   player.events = {
     onProgress: (stage, f) => setProgress(friendlyStage(stage), f),
     onAnalysis: (fromCache) => onAnalysed(fromCache),
@@ -108,11 +117,9 @@ let currentSongId = '';
 /** A song is being opened (the isolation fix-up must not reload the page meanwhile). */
 let opening = 0;
 
-async function load(source: { file?: File; demo?: boolean; libraryId?: string }) {
+async function load(source: { file?: File; demo?: boolean; libraryId?: string; info?: SongInfo }) {
   show('error', false);
-  show('home', false);
-  setMiniPlayer(false);
-  show('another');
+  go('app');
   const token = ++songToken;
   opening++;
   // Only a song this call added is removed again if it can't be decoded.
@@ -123,7 +130,7 @@ async function load(source: { file?: File; demo?: boolean; libraryId?: string })
     currentSongId = source.libraryId ?? '';
     if (source.file && !currentSongId) {
       try {
-        const entry = await addSong(source.file);
+        const entry = await addSong(source.file, source.info);
         currentSongId = entry.id;
         if (entry.isNew) added = entry.id;
       } catch { /* storage full or blocked: play it anyway */ }
@@ -137,7 +144,7 @@ async function load(source: { file?: File; demo?: boolean; libraryId?: string })
     setProgress('Decoding', 0);
     let loaded: Promise<void>;
     if (source.file) {
-      song = await songInfo(source.file);
+      song = source.info ?? await songInfo(source.file);
       loaded = p.loadFile(source.file);
     } else {
       song = { title: 'Demo track', artist: 'Synthesized in the browser' };
@@ -154,9 +161,8 @@ async function load(source: { file?: File; demo?: boolean; libraryId?: string })
     if (token !== songToken) return;
     // A file that can't be decoded doesn't belong in the library.
     if (added) { void removeSong(added).then(() => renderLibrary()); currentSongId = ''; }
-    show('app', false);
-    show('another', false);
-    show('home');
+    go('home');
+    setPlayerTab(false);
     showError(`Couldn't decode that file (${errText(err)}). MP3, M4A, WAV, FLAC and OGG are supported.`);
   } finally {
     opening--;
@@ -178,6 +184,7 @@ function resetSongUi() {
   lyricOffset = 0;
   $('lyr-offset').textContent = '0.0 s';
   sectionFromHandles = false;
+  sectionSeam = null;
   $('lyrics').innerHTML = '';
   $('lyr-results').innerHTML = '';
   $('lyr-status').textContent = '';
@@ -192,6 +199,7 @@ function onDecoded(p: Player) {
   viz.setSong(p.source!.channels, null);
   if (currentSongId) void updateSong(currentSongId, { duration: p.source!.length / p.source!.sampleRate, playedAt: Date.now() }).then(() => renderLibrary());
   $<HTMLButtonElement>('play').disabled = false;
+  setPlayerTab(true);
   updateMediaSession();
   updateModeHint();
   void restoreLyrics();
@@ -250,20 +258,23 @@ function currentMode(): 'endless' | 'loop' { return player?.currentSettings.mode
 
 function setMode(mode: 'endless' | 'loop', apply = true) {
   document.querySelectorAll<HTMLButtonElement>('.seg [data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+  show('style-row', mode === 'endless');
   const p = player;
   if (apply && p) {
     p.updateSettings({ mode });
     if (mode === 'endless' && p.analysis && p.currentSettings.range && !sectionFromHandles) {
       p.setSection(null);
+      sectionSeam = null;
       syncSectionInputs();
     }
     if (mode === 'loop' && p.analysis) {
       // Loop mode always shows its loop on the handles: the section if one is
       // set, otherwise the best loop found.
       const r = p.currentSettings.range;
-      const loop = r ? p.loopFor(r) : p.currentSettings.loop ?? p.loops[0];
+      // A set section was already snapped when it was chosen: loop it exactly.
+      const loop = r ? p.loopFor(r, false) : p.currentSettings.loop ?? p.loops[0];
       if (loop) {
-        p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop);
+        sectionSeam = p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop)?.quality ?? null;
         relockStems(loop);
       }
       syncSectionInputs();
@@ -275,6 +286,19 @@ function setMode(mode: 'endless' | 'loop', apply = true) {
 }
 document.querySelectorAll<HTMLButtonElement>('.seg [data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode as 'endless' | 'loop')));
 
+/** Endless style (persisted): Smooth plays long stretches, Jumpy branches often. */
+let endlessStyle: 'smooth' | 'jumpy' = (() => { try { return localStorage.getItem('stems.style') === 'jumpy' ? 'jumpy' : 'smooth'; } catch { return 'smooth'; } })();
+function setStyle(s: 'smooth' | 'jumpy') {
+  endlessStyle = s;
+  try { localStorage.setItem('stems.style', s); } catch { /* ignore */ }
+  document.querySelectorAll<HTMLButtonElement>('[data-style]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.style === s)));
+  player?.updateSettings({ style: s });
+  refreshGraph();
+  updateModeHint();
+}
+document.querySelectorAll<HTMLButtonElement>('[data-style]').forEach((b) => b.addEventListener('click', () => setStyle(b.dataset.style as 'smooth' | 'jumpy')));
+setStyle(endlessStyle);
+
 function updateModeHint() {
   const p = player;
   const el = $('mode-hint');
@@ -285,6 +309,10 @@ function updateModeHint() {
   if (currentMode() === 'endless') {
     const sec = p.planner?.section;
     const b = p.analysis.beats;
+    if (endlessStyle === 'jumpy') {
+      el.textContent = `Jumpy: branches often between matching beats${r ? ` within ${fmt(b[r.start] / sr)}-${fmt(b[r.end] / sr)}` : ''}, like the Infinite Jukebox.`;
+      return;
+    }
     el.textContent = r
       ? `Endless within ${fmt(b[r.start] / sr)}-${fmt(b[r.end] / sr)}.`
       : sec
@@ -338,6 +366,7 @@ function syncControls() {
 function settingsFromControls() {
   const v = (id: string) => $<HTMLInputElement>(id);
   return {
+    style: endlessStyle,
     barsBetweenJumps: Number(v('bars').value),
     threshold: Number(v('thr').value),
     fadeSec: Number(v('fade').value) / 1000,
@@ -364,7 +393,7 @@ function selectLoop(loop: LoopCandidate) {
   if (!p) return;
   sectionFromHandles = false;
   p.updateSettings({ mode: 'loop' });
-  p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop);
+  sectionSeam = p.setSection({ start: loop.startBeat, end: loop.endBeat }, loop)?.quality ?? null;
   relockStems(loop);
   syncSectionInputs();
   setMode('loop', false);
@@ -439,18 +468,24 @@ function snapHandles(moved: 'start' | 'end'): [number, number] {
 function drawSection(indices?: [number, number]) {
   const p = player;
   if (!p?.analysis) return;
-  const [si, ei] = indices ?? [nearestStop(Number(secStart.value)), nearestStop(Number(secEnd.value))];
-  const whole = si === 0 && ei === stops.length - 1;
+  // While dragging: the stops under the handles. Otherwise: the player's (possibly snapped) section.
+  const r = indices ? null : p.currentSettings.range;
+  const [s, e] = r ? [r.start, r.end] : (() => {
+    const [si, ei] = indices ?? [nearestStop(Number(secStart.value)), nearestStop(Number(secEnd.value))];
+    return [stops[si], stops[ei]];
+  })();
+  const whole = s === stops[0] && e === stops[stops.length - 1];
   const b = p.analysis.beats, sr = p.source!.sampleRate;
   const max = Number(secStart.max) || 1;
   const fill = $('range-fill');
-  fill.style.left = `${(beatMs(stops[si]) / max) * 100}%`;
-  fill.style.width = `${((beatMs(stops[ei]) - beatMs(stops[si])) / max) * 100}%`;
-  viz.setSection(whole ? null : [b[stops[si]], b[stops[ei]]]);
-  const bars = Math.round((stops[ei] - stops[si]) / p.analysis.meter.beatsPerBar);
+  fill.style.left = `${(beatMs(s) / max) * 100}%`;
+  fill.style.width = `${((beatMs(e) - beatMs(s)) / max) * 100}%`;
+  viz.setSection(whole ? null : [b[s], b[e]]);
+  const bars = Math.round((e - s) / p.analysis.meter.beatsPerBar);
+  const seam = !indices && sectionSeam !== null ? `, seam ${sectionSeam}%` : '';
   $('sec-label').textContent = whole
     ? 'Full track'
-    : `${fmt(b[stops[si]] / sr)}-${fmt(b[stops[ei]] / sr)}, ${bars} bar${bars === 1 ? '' : 's'}`;
+    : `${fmt(b[s] / sr)}-${fmt(b[e] / sr)}, ${bars} bar${bars === 1 ? '' : 's'}${seam}`;
   show('sec-reset', !whole);
 }
 
@@ -463,12 +498,24 @@ for (const [input, which] of [[secStart, 'start'], [secEnd, 'end']] as const) {
 }
 $('sec-reset').addEventListener('click', () => applySection([0, stops.length - 1]));
 
+const seamlessBox = $<HTMLInputElement>('seamless');
+try { seamlessBox.checked = localStorage.getItem('stems.seamless') !== '0'; } catch { /* default on */ }
+seamlessBox.addEventListener('change', () => {
+  try { localStorage.setItem('stems.seamless', seamlessBox.checked ? '1' : '0'); } catch { /* ignore */ }
+  if (player) player.seamless = seamlessBox.checked;
+  const r = player?.currentSettings.range;
+  if (r && sectionFromHandles) applySection(snapHandles('end'));
+});
+
+/** Match quality of the hand-picked section's seam, shown next to its range. */
+let sectionSeam: number | null = null;
+
 function applySection([si, ei]: [number, number]) {
   const p = player;
   if (!p?.analysis) return;
   const whole = si === 0 && ei === stops.length - 1;
   sectionFromHandles = !whole;
-  p.setSection(whole ? null : { start: stops[si], end: stops[ei] });
+  sectionSeam = p.setSection(whole ? null : { start: stops[si], end: stops[ei] })?.quality ?? null;
   const loop = p.currentSettings.loop;
   if (currentMode() === 'loop' && loop) relockStems(loop);
   syncSectionInputs();
@@ -520,12 +567,9 @@ function renderLoops() {
     li.classList.toggle('sel', active);
     const lyricNote = lyricLines.length ? `, ${linesInLoop(l, lyricLines, sr).length} lyric lines` : '';
     li.innerHTML = `
-      <span class="meta"><b>Loop ${i + 1}</b> <span class="q ${seamGrade(l)}" title="Waveform correlation ${Math.round(l.rho * 100)}%, spectral step ${l.spectralDb.toFixed(1)} dB">${seamLabel(l)} seam</span><br>${l.bars} bars, ${fmt(l.startSample / sr)}-${fmt(l.endSample / sr)} (${fmt(l.seconds)})${lyricNote}</span>
-      <span class="acts">
-        <button data-act="use" ${active ? 'class="primary" aria-pressed="true"' : ''}>${active ? 'Looping' : 'Loop'}</button>
-        <button data-act="seam" title="Play the four seconds before the seam">Preview seam</button>
-        <button data-act="wav" title="Export one cycle as WAV with loop points">WAV</button>
-      </span>`;
+      <button data-act="use" class="meta" aria-pressed="${active}"><b>Loop ${i + 1}</b><span class="q ${seamGrade(l)}" title="Waveform correlation ${Math.round(l.rho * 100)}%, spectral step ${l.spectralDb.toFixed(1)} dB">${seamLabel(l)}</span><span class="d">${l.bars} bars · ${fmt(l.startSample / sr)}-${fmt(l.endSample / sr)} · ${fmt(l.seconds)}${lyricNote}</span></button>
+      <button data-act="seam" class="icon" aria-label="Preview the seam of loop ${i + 1}" title="Play the four seconds before the seam">${ICON_SEAM}</button>
+      <button data-act="wav" class="icon" aria-label="Download loop ${i + 1} as WAV" title="One cycle as WAV with loop points">${ICON_DOWNLOAD}</button>`;
     li.querySelector<HTMLButtonElement>('[data-act=use]')!.onclick = async () => {
       selectLoop(l);
       if (!p.playing) await togglePlay();
@@ -899,6 +943,8 @@ function applyShareMix() {
 
 // ---- Transport, sleep, lock screen ------------------------------------------------------
 
+const ICON_SEAM = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 4v6h-6l2.3-2.3A6 6 0 1 0 18 12h2a8 8 0 0 1-16 0z" fill="currentColor"/></svg>';
+const ICON_DOWNLOAD = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M11 4h2v9.2l3.3-3.3 1.4 1.4L12 17l-5.7-5.7 1.4-1.4 3.3 3.3zM5 19h14v2H5z" fill="currentColor"/></svg>';
 const ICON_PLAY = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>';
 const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>';
 let shownPlaying: boolean | null = null;
@@ -906,11 +952,11 @@ function updatePlayButton() {
   const on = !!player?.playing;
   if (on === shownPlaying) return;
   shownPlaying = on;
-  for (const b of [$('play'), $('np-play')]) {
+  for (const b of [$('play'), ...document.querySelectorAll<HTMLElement>('.lib-play')]) {
     b.innerHTML = on ? ICON_PAUSE : ICON_PLAY;
     b.setAttribute('aria-label', on ? 'Pause' : 'Play');
   }
-  $('np-eq').classList.toggle('on', on);
+  $('tab-eq').classList.toggle('on', on);
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = on ? 'playing' : 'paused';
 }
 
@@ -922,7 +968,6 @@ async function togglePlay() {
   updatePlayButton();
 }
 $('play').addEventListener('click', togglePlay);
-$('np-play').addEventListener('click', togglePlay);
 document.addEventListener('keydown', (e) => {
   const t = e.target;
   if (e.code === 'Space' && !(t instanceof HTMLInputElement) && !(t instanceof HTMLButtonElement) && !(t instanceof HTMLSelectElement)) {
@@ -950,21 +995,37 @@ function updateMediaSession() {
 
 const fileInput = $<HTMLInputElement>('file');
 $('pick').addEventListener('click', () => fileInput.click());
-$('another').addEventListener('click', () => showLibrary());
-$('np-open').addEventListener('click', () => showPlayer());
 
-function showPlayer() {
-  show('home', false);
-  setMiniPlayer(false);
-  show('app');
-  show('another');
-  window.scrollTo({ top: 0 });
+// ---- Views (tab bar) ------------------------------------------------------------------------
+
+type View = 'home' | 'search' | 'app';
+const scrollPos: Partial<Record<View, number>> = {};
+let view: View = 'home';
+
+function go(v: View) {
+  if (v !== view) scrollPos[view] = window.scrollY;
+  for (const k of ['home', 'search', 'app'] as const) show(k, k === v);
+  document.querySelectorAll<HTMLButtonElement>('#tabbar [data-view]').forEach((b) => {
+    if (b.dataset.view === v) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  const back = v !== view ? scrollPos[v] ?? 0 : window.scrollY;
+  view = v;
+  if (v === 'home') void renderLibrary();
+  window.scrollTo({ top: back });
 }
 
-function setMiniPlayer(on: boolean) {
-  show('now-playing', on);
-  document.body.classList.toggle('np-shown', on);
+/** The Player tab is usable once a song is open; it carries the song's name. */
+function setPlayerTab(on: boolean) {
+  const b = document.querySelector<HTMLButtonElement>('#tabbar [data-view=app]')!;
+  b.disabled = !on;
+  $('tab-player').textContent = on ? song.title || 'Player' : 'Player';
 }
+
+document.querySelectorAll<HTMLButtonElement>('#tabbar [data-view]').forEach((b) => b.addEventListener('click', () => {
+  const v = b.dataset.view as View;
+  if (v === view) window.scrollTo({ top: 0, behavior: 'smooth' });
+  else go(v);
+}));
 fileInput.addEventListener('change', () => { const fs = [...(fileInput.files ?? [])]; fileInput.value = ''; void addFiles(fs); });
 $('demo').addEventListener('click', () => load({ demo: true }));
 const drop = $('drop');
@@ -1002,16 +1063,51 @@ async function addFiles(files: File[]) {
 
 async function openSong(id: string) {
   const f = await songFile(id);
-  if (f) void load({ file: f, libraryId: id });
+  const e = librarySongs.find((s) => s.id === id);
+  if (f) void load({ file: f, libraryId: id, info: e && e.title ? { title: e.title, artist: e.artist } : undefined });
 }
 
-function showLibrary() {
-  show('app', false);
-  setMiniPlayer(!!player?.source);
-  show('another', false);
-  show('home');
-  void renderLibrary();
-  window.scrollTo({ top: 0 });
+// ---- Find music ---------------------------------------------------------------------------
+
+$<HTMLFormElement>('music-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = $<HTMLInputElement>('music-q');
+  q.blur();
+  const status = $('music-status');
+  const list = $('music-results');
+  status.textContent = 'Searching…';
+  list.innerHTML = '';
+  try {
+    const hits = await searchTracks(q.value);
+    status.textContent = hits.length ? '' : 'Nothing streamable matches. Try an artist name or a genre.';
+    for (const t of hits) list.appendChild(trackRow(t));
+  } catch (err) {
+    status.textContent = errText(err);
+  }
+});
+
+function trackRow(t: TrackHit): HTMLLIElement {
+  const li = document.createElement('li');
+  const meta = [t.artist, fmt(t.duration), t.genre].filter(Boolean).join(' · ');
+  li.innerHTML = `${t.artwork ? `<img src="${esc(t.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer" crossorigin="anonymous" />` : '<span class="art"></span>'}
+    <span class="meta"><b>${esc(t.title)}</b><span>${esc(meta)}</span></span>
+    <button>Add</button>`;
+  const btn = li.querySelector('button')!;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    const status = $('music-status');
+    try {
+      const f = await fetchAudioFile(trackAudioUrl(t.id), (fr) => { btn.textContent = `${Math.round(fr * 100)}%`; }, fetch, trackFileName(t));
+      btn.textContent = 'Added';
+      status.textContent = '';
+      void load({ file: f, info: { title: t.title, artist: t.artist } });
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Add';
+      status.textContent = `${t.title}: ${errText(err)}`;
+    }
+  };
+  return li;
 }
 
 /** Redraw the library; `reload` re-reads it from storage (typing in search only filters). */
@@ -1021,8 +1117,6 @@ async function renderLibrary(reload = true) {
   show('library', librarySongs.length > 0);
   show('hero', librarySongs.length === 0 && !playing);
   $('drop').classList.toggle('compact', librarySongs.length > 0);
-  $('now-title').textContent = song.title || 'Untitled';
-  $('np-open').setAttribute('aria-label', `Back to the player: ${[song.title, song.artist].filter(Boolean).join(', ')}`);
   $('lib-count').textContent = librarySongs.length ? `${librarySongs.length}` : '';
   const list = $('lib-list');
   list.innerHTML = '';
@@ -1032,8 +1126,10 @@ async function renderLibrary(reload = true) {
     const li = document.createElement('li');
     li.classList.toggle('current', s.id === currentSongId);
     const meta = [s.artist, s.duration ? fmt(s.duration) : '', `${(s.size / 1e6).toFixed(1)} MB`].filter(Boolean).join(' · ');
-    li.innerHTML = `<button class="open"><b>${esc(s.title || s.name)}</b><span>${esc(meta)}</span></button><button class="rm" aria-label="Remove ${esc(s.title || s.name)} from the library">Remove</button>`;
-    li.querySelector<HTMLButtonElement>('.open')!.onclick = () => (s.id === currentSongId && player?.source ? showPlayer() : void openSong(s.id));
+    const isCurrent = s.id === currentSongId && playing;
+    li.innerHTML = `${isCurrent ? `<button class="lib-play" aria-label="${player?.playing ? 'Pause' : 'Play'}">${player?.playing ? ICON_PAUSE : ICON_PLAY}</button>` : ''}<button class="open"><b>${esc(s.title || s.name)}</b><span>${esc(meta)}</span></button><button class="rm" aria-label="Remove ${esc(s.title || s.name)} from the library">Remove</button>`;
+    li.querySelector<HTMLButtonElement>('.lib-play')?.addEventListener('click', togglePlay);
+    li.querySelector<HTMLButtonElement>('.open')!.onclick = () => (isCurrent ? go('app') : void openSong(s.id));
     li.querySelector<HTMLButtonElement>('.rm')!.onclick = async () => { await removeSong(s.id); if (s.id === currentSongId) currentSongId = ''; void renderLibrary(); };
     list.appendChild(li);
   }
@@ -1106,17 +1202,7 @@ lq?.setConsumer(async (params) => {
 
 function frame() {
   const p = player;
-  if (p?.source && document.visibilityState === 'visible' && !$('now-playing').classList.contains('hidden')) {
-    const pos = p.audiblePosition(), sr = p.source.sampleRate;
-    const t = pos / sr - lyricOffset;
-    const line = lyricLines.length ? lyricLines[lineAt(lyricLines, t)] : undefined;
-    const sub = line && t - line.time < 8 ? line.text : [song.artist, currentMode() === 'loop' ? 'Loop' : 'Endless'].filter(Boolean).join(' · ');
-    if ($('np-sub').textContent !== sub) $('np-sub').textContent = sub;
-    $('np-sub').classList.toggle('lyric', !!line && sub === line.text);
-    $('np-time').textContent = `${fmt(pos / sr)} / ${fmt(p.source.length / sr)}`;
-    $('np-fill').style.width = `${(100 * pos / p.source.length).toFixed(2)}%`;
-    updatePlayButton();
-  }
+  if (p?.source) updatePlayButton();
   if (p?.source && document.visibilityState === 'visible' && !$('app').classList.contains('hidden')) {
     const pos = p.audiblePosition();
     const heads = p.stems

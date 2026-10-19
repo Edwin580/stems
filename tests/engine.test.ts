@@ -3,7 +3,7 @@ import { FFT } from '../src/engine/fft';
 import { mixdown } from '../src/engine/dsp';
 import { analyze, type Analysis } from '../src/engine/analyze';
 import { coarseMono, type AudioSource } from '../src/engine/align';
-import { findLoops, loopAt } from '../src/engine/loops';
+import { findLoops, loopAt, snapLoop } from '../src/engine/loops';
 import { infiniteCore } from '../src/engine/graph';
 import { DEFAULT_SETTINGS, Planner } from '../src/engine/planner';
 import { crossfadeGains, Splicer } from '../src/engine/splicer';
@@ -149,6 +149,24 @@ describe.each([
     expect(tail.toBeat!).toBeLessThan(sec.end);
   });
 
+  it('Jumpy style jumps often, between matching beats of the bar, and never past the wrap', () => {
+    const m = a.meter.beatsPerBar;
+    const planner = new Planner(a, src, coarse, { ...DEFAULT_SETTINGS, style: 'jumpy' }, 9);
+    const sec = planner.section!;
+    planner.resetFrom(0);
+    let beats = 0, jumps = 0, at = 0;
+    for (let k = 0; k < 60; k++) {
+      const j = planner.next()!;
+      beats += j.fromBeat! + 1 - at;
+      at = j.toBeat!;
+      jumps++;
+      expect(j.fromBeat! + 1).toBeLessThanOrEqual(sec.end);
+      if (!(j.fromBeat === sec.end - 1 && j.toBeat === sec.start)) expect((((j.toBeat! - (j.fromBeat! + 1)) % m) + m) % m).toBe(0);
+    }
+    // Far more often than Smooth's ~16 bars.
+    expect(beats / jumps).toBeLessThan(8 * m);
+  });
+
   it('keeps Endless inside a chosen section and wraps from its end to its start', () => {
     const m = a.meter.beatsPerBar;
     const start = m * 2 + a.meter.phase, end = start + m * 8;
@@ -168,6 +186,13 @@ describe.each([
     expect([loop.startBeat, loop.endBeat, loop.bars]).toEqual([start, end, 8]);
     expect(loop.endSample).toBe(a.beats[end]);
     expect(Math.abs(loop.startSample - a.beats[start])).toBeLessThan(0.05 * song.sampleRate);
+    // Seamless snapping moves the ends by whole bars, never to a worse seam.
+    const off = start + 1; // deliberately off the bar grid's best points
+    const raw = loopAt(a, src, coarse, off, off + 8 * a.meter.beatsPerBar, 2646);
+    const snapped = snapLoop(a, src, coarse, off, off + 8 * a.meter.beatsPerBar, 2646);
+    expect(snapped.cost).toBeLessThanOrEqual(raw.cost + 1e-9);
+    expect(Math.abs((snapped.startBeat - off) % a.meter.beatsPerBar)).toBe(0);
+    expect(Math.abs((snapped.endBeat - (off + 8 * a.meter.beatsPerBar)) % a.meter.beatsPerBar)).toBe(0);
   });
 
   it('jumps happen and land where the planner said', () => {

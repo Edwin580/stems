@@ -1,7 +1,7 @@
 import { rescoreWithPenalty, type Analysis } from '../engine/analyze';
 import { coarseMono, type AudioSource } from '../engine/align';
 import { mixdown } from '../engine/dsp';
-import { findLoops, loopAt, type LoopCandidate } from '../engine/loops';
+import { findLoops, loopAt, snapLoop, type LoopCandidate } from '../engine/loops';
 import { DEFAULT_SETTINGS, Planner, type PlannerSettings } from '../engine/planner';
 import { bakeLoop, planToLength, renderJumps, type RenderSources } from '../engine/render';
 import { vocalBoundaryPenalty, type Stems } from '../engine/separate';
@@ -203,7 +203,7 @@ export class Player {
     this.loops = findLoops(a, src, this.coarse, { minBeats: 8 * a.meter.beatsPerBar, maxCandidates: 8, lengthBias: 0.04, fade, autoFade: this.settings.autoFade });
     const same = prev && this.loops.find((l) => l.startBeat === prev.startBeat && l.endBeat === prev.endBeat);
     // A section or handle loop isn't among the candidates: rebuild it with the current fade.
-    this.settings.loop = same ?? (prev && this.settings.mode === 'loop' ? this.loopFor({ start: prev.startBeat, end: prev.endBeat }) : this.loops[0] ?? null);
+    this.settings.loop = same ?? (prev && this.settings.mode === 'loop' ? loopAt(a, src, this.coarse, prev.startBeat, prev.endBeat, fade, this.settings.autoFade) : this.loops[0] ?? null);
     this.planner = new Planner(a, src, this.coarse, this.settings);
     this.replan();
   }
@@ -281,26 +281,43 @@ export class Player {
     return a.beats.map((_, i) => i).filter((i) => (((i - a.meter.phase) % m) + m) % m === 0);
   }
 
-  /** A verified loop over exactly this section. */
-  loopFor(range: { start: number; end: number }): LoopCandidate {
-    return loopAt(this.analysis!, this.source!, this.coarse, range.start, range.end, Math.round(this.settings.fadeSec * this.source!.sampleRate), this.settings.autoFade);
+  /**
+   * Move section ends (by whole bars, at most two) to the cleanest seam
+   * nearby. On by default; off loops exactly the chosen bars.
+   */
+  seamless = true;
+
+  /** A verified loop over this section (snapped to a clean seam when `seamless`). */
+  loopFor(range: { start: number; end: number }, snap = this.seamless): LoopCandidate {
+    const fade = Math.round(this.settings.fadeSec * this.source!.sampleRate);
+    return snap
+      ? snapLoop(this.analysis!, this.source!, this.coarse, range.start, range.end, fade, this.settings.autoFade)
+      : loopAt(this.analysis!, this.source!, this.coarse, range.start, range.end, fade, this.settings.autoFade);
   }
 
   /**
    * Keep playback inside beats [start, end), or the whole song (null). Loop
-   * mode loops exactly that section; Endless wanders inside it.
+   * mode loops exactly that section; Endless wanders inside it. Returns the
+   * section's end-to-start seam (after snapping), or null for the whole song.
    */
-  setSection(range: { start: number; end: number } | null, loop?: LoopCandidate) {
-    if (!this.analysis || !this.planner) return;
+  setSection(range: { start: number; end: number } | null, loop?: LoopCandidate): LoopCandidate | null {
+    if (!this.analysis || !this.planner) return null;
     // In Loop mode, "no section" means looping the whole song end to start.
     const whole = { start: 0, end: this.analysis.beats.length - 1 };
-    const next = loop ?? (this.settings.mode === 'loop' ? this.loopFor(range ?? whole) : this.settings.loop);
+    // A hand-picked section repeats through its end-to-start seam in both modes, so snap it once here.
+    let snapped: LoopCandidate | null = null;
+    if (range && !loop && this.seamless) {
+      snapped = this.loopFor(range);
+      range = { start: snapped.startBeat, end: snapped.endBeat };
+    }
+    const next = loop ?? (this.settings.mode === 'loop' ? snapped ?? this.loopFor(range ?? whole) : this.settings.loop);
     this.settings = { ...this.settings, range, loop: next };
     this.planner.update({ range, loop: next });
     const b = this.analysis.beats;
     const pos = this.position();
     if (range && (pos < b[range.start] || pos >= b[range.end] - 0.25 * this.source!.sampleRate)) this.seek(b[range.start]);
     else this.replan();
+    return range ? loop ?? snapped ?? (this.settings.mode === 'loop' ? next : null) : null;
   }
 
   updateSettings(s: Partial<PlannerSettings>) {

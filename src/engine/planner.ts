@@ -22,6 +22,12 @@ export interface PlannerSettings {
   mode: 'endless' | 'loop';
   /** Max transition cost allowed (lower = stricter, fewer but cleaner jumps). */
   threshold: number;
+  /**
+   * Endless character. Smooth: long stretches, rare jumps only at the
+   * cleanest seams. Jumpy: Infinite Jukebox style, frequent jumps between
+   * matching beats (same position in the bar), chance rising each beat.
+   */
+  style: 'smooth' | 'jumpy';
   /** Average bars between jumps in endless mode. */
   barsBetweenJumps: number;
   /** Only jump at bar boundaries. */
@@ -46,14 +52,21 @@ export interface PlannerSettings {
   range: { start: number; end: number } | null;
 }
 
+/** Jumpy style constants (after the Infinite Jukebox's defaults). */
+const JUMPY = { minChance: 0.18, maxChance: 0.5, ramp: 0.02, maxBranches: 4, maxCost: 0.6, minRho: 0.35 };
+
+/** The automatic wrap per analysis (it only depends on the audio and the fade). */
+const wrapMemo = new WeakMap<Analysis, Map<string, { start: number; end: number } | null>>();
+
 export const DEFAULT_SETTINGS: PlannerSettings = {
   mode: 'endless',
+  style: 'smooth',
   threshold: 0.3,
   barsBetweenJumps: 16,
   barLock: true,
   fadeSec: 0.06,
-  minRho: 0.45,
-  maxSpectralDb: 6,
+  minRho: 0.6,
+  maxSpectralDb: 4.5,
   autoFade: true,
   loudnessMatch: true,
   phraseBias: 0.6,
@@ -91,6 +104,8 @@ export class Planner {
   section: { start: number; end: number } | null = null;
   /** How often each beat has been planned through, for spreading variety jumps. */
   private played = new Float32Array(0);
+  /** Jumpy style: chance of jumping at the next beat with a branch (ramps up, resets after a jump). */
+  private chance = JUMPY.minChance;
 
   constructor(a: Analysis, src: AudioSource, coarse: Float32Array, settings: PlannerSettings, seed = Date.now()) {
     this.a = a;
@@ -108,7 +123,8 @@ export class Planner {
   get fade(): number { return Math.round(this.s.fadeSec * this.a.sampleRate); }
 
   update(settings: Partial<PlannerSettings>) {
-    const thrChanged = settings.threshold !== undefined && settings.threshold !== this.s.threshold;
+    const thrChanged = (settings.threshold !== undefined && settings.threshold !== this.s.threshold)
+      || (settings.style !== undefined && settings.style !== this.s.style);
     const rangeChanged = settings.range !== undefined && JSON.stringify(settings.range) !== JSON.stringify(this.s.range);
     this.s = { ...this.s, ...settings };
     if (thrChanged || rangeChanged) this.rebuildGraph();
@@ -129,9 +145,11 @@ export class Planner {
     const sec = this.section;
     if (sec) {
       const minHop = 2 * this.a.meter.beatsPerBar;
-      this.edges = this.a.edges.map((l, i) => (i >= sec.start && i + 1 < sec.end
-        ? l.filter((e) => e.cost <= thr && e.to >= sec.start && e.to < sec.end && Math.abs(e.to - (i + 1)) >= minHop)
-        : []));
+      this.edges = this.s.style === 'jumpy'
+        ? this.jumpyEdges(sec, thr)
+        : this.a.edges.map((l, i) => (i >= sec.start && i + 1 < sec.end
+          ? l.filter((e) => e.cost <= thr && e.to >= sec.start && e.to < sec.end && Math.abs(e.to - (i + 1)) >= minHop)
+          : []));
       // The wrap itself, so the song map draws it.
       const wrapCost = this.a.transitions[(sec.end - 1) * n + sec.start];
       this.edges[sec.end - 1] = [{ from: sec.end - 1, to: sec.start, cost: Number.isFinite(wrapCost) ? wrapCost : 1 }];
@@ -164,12 +182,49 @@ export class Planner {
   }
 
   /**
+   * Jumpy style branches: from each beat to up to four beats at the same
+   * position in the bar (at least a bar away), inside the cycle. The
+   * threshold loosens until a sixth of the beats have a branch, so every
+   * song gets frequent jumps, but never past JUMPY.maxCost.
+   */
+  private jumpyEdges(sec: { start: number; end: number }, thr: number): Edge[][] {
+    const a = this.a, n = a.beats.length, T = a.transitions, m = a.meter.beatsPerBar;
+    const cands: Edge[][] = Array.from({ length: n }, () => []);
+    const best: number[] = [];
+    // The automatic cycle only decides where the song wraps: branching starts from the top.
+    const lo = this.s.range ? sec.start : 0;
+    for (let i = lo; i + 1 < sec.end; i++) {
+      const out: Edge[] = [];
+      for (let j = lo; j < sec.end; j++) {
+        if ((((j - (i + 1)) % m) + m) % m !== 0 || Math.abs(j - (i + 1)) < m) continue;
+        const c = T[i * n + j];
+        if (Number.isFinite(c)) out.push({ from: i, to: j, cost: c });
+      }
+      out.sort((x, y) => x.cost - y.cost);
+      cands[i] = out.slice(0, JUMPY.maxBranches);
+      if (out.length) best.push(out[0].cost);
+    }
+    best.sort((x, y) => x - y);
+    const cover = best[Math.floor((sec.end - lo) / 6)] ?? best[best.length - 1] ?? thr;
+    const t = Math.min(JUMPY.maxCost, Math.max(thr, cover));
+    return cands.map((l) => l.filter((e) => e.cost <= t));
+  }
+
+  /**
    * The automatic cycle: the best bar-aligned seam from the last part of the
    * track back to its first part. Candidates are ranked by musical cost with
    * a bonus for spanning more of the song, then the best few are checked at
    * sample level (waveform correlation, spectral step).
    */
   private autoSection(): { start: number; end: number } | null {
+    const key = `${this.fade}|${this.s.autoFade}`;
+    let memo = wrapMemo.get(this.a);
+    if (!memo) wrapMemo.set(this.a, (memo = new Map()));
+    if (!memo.has(key)) memo.set(key, this.findWrap());
+    return memo.get(key)!;
+  }
+
+  private findWrap(): { start: number; end: number } | null {
     const a = this.a, n = a.beats.length, T = a.transitions;
     const m = a.meter.beatsPerBar;
     const down = (i: number) => (((i - a.meter.phase) % m) + m) % m === 0;
@@ -188,10 +243,12 @@ export class Planner {
     if (!cands.length) return null;
     cands.sort((x, y) => x.key - y.key);
     let best: { from: number; to: number; score: number } | null = null;
-    for (const c of cands.slice(0, 12)) {
+    // The wrap is heard on every cycle: check many candidates and weigh the
+    // sample-level match heavily.
+    for (const c of cands.slice(0, 40)) {
       const j = this.makeJump(c.from, c.to);
       this.nextId--; // probe only
-      const score = c.key + (1 - Math.max(0, j.rho)) * 0.5 + Math.max(0, j.spectralDb - 3) * 0.03;
+      const score = c.key + (1 - Math.max(0, j.rho)) * 1.2 + Math.max(0, j.spectralDb - 2.5) * 0.06;
       if (!best || score < best.score) best = { from: c.from, to: c.to, score };
     }
     return best ? { start: best.to, end: best.from + 1 } : null;
@@ -257,6 +314,7 @@ export class Planner {
     const r = this.section;
     // Past the cycle (after a seek into the outro): head back in at the next bar line.
     if (r && this.cursor >= r.end) return this.reenter(this.cursor);
+    if (this.s.style === 'jumpy') return this.nextJumpy();
     for (let i = this.cursor; i < n - 1; i++, this.beatsSinceJump++) {
       if (r && i + 1 >= r.end) return this.take(r.end - 1, r.start, this.makeJump(r.end - 1, r.start));
       const out = this.edges[i];
@@ -307,6 +365,32 @@ export class Planner {
     this.beatsSinceJump = 0;
     const { spectralDb: _s, ...plain } = jump;
     return plain;
+  }
+
+  /**
+   * Jumpy style: at each beat with a branch, jump with the current chance;
+   * the chance climbs by JUMPY.ramp per half second of music and resets
+   * after each jump. The wrap at the end of the cycle is always taken.
+   */
+  private nextJumpy(): Jump | null {
+    const a = this.a, n = a.beats.length, r = this.section, sr = a.sampleRate;
+    for (let i = this.cursor; i < n - 1; i++, this.beatsSinceJump++) {
+      if (r && i + 1 >= r.end) { this.chance = JUMPY.minChance; return this.take(r.end - 1, r.start, this.makeJump(r.end - 1, r.start)); }
+      const out = this.edges[i];
+      if (out.length && this.beatsSinceJump >= 2 && this.rng() < this.chance) {
+        const edge = this.chooseEdge(out, false);
+        if (edge) {
+          const jump = this.makeJump(edge.from, edge.to);
+          if (jump.rho >= JUMPY.minRho && jump.spectralDb <= this.s.maxSpectralDb + 2) {
+            this.chance = JUMPY.minChance;
+            return this.take(edge.from, edge.to, jump);
+          }
+        }
+      }
+      const beatSec = (a.beats[i + 1] - a.beats[i]) / sr;
+      this.chance = Math.min(JUMPY.maxChance, this.chance + JUMPY.ramp * (beatSec / 0.5));
+    }
+    return null;
   }
 
   private chooseEdge(out: Edge[], forced: boolean): Edge | null {

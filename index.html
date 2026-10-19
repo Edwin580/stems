@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#0d0f14" />
     <meta name="description" content="Loop any song without audible seams. Beat-matched endless playback, stem separation and loop export, processed locally in the browser." />
     <title>stems: endless, seamless playback</title>
@@ -14,7 +14,6 @@
   <body>
     <header>
       <div class="brand"><span class="logo" aria-hidden="true">∞</span> stems</div>
-      <button id="another" class="hidden">Library</button>
     </header>
 
     <main>
@@ -47,6 +46,17 @@
         <button id="demo" class="link">Load the demo track</button>
       </section>
 
+      <section id="search" class="hidden" aria-label="Find music">
+        <h1 class="view-title">Find music</h1>
+        <p class="lede small">Full tracks that artists publish for streaming on Audius. Picking one downloads the MP3 into your library.</p>
+        <form id="music-form" class="search">
+          <input id="music-q" type="search" placeholder="Artist, track or genre" aria-label="Search music" autocomplete="off" enterkeyhint="search" />
+          <button class="primary" type="submit">Search</button>
+        </form>
+        <div id="music-status" class="sub" role="status"></div>
+        <ol id="music-results" class="tracks"></ol>
+      </section>
+
       <section id="app" class="hidden">
         <div class="card player">
           <div class="who">
@@ -59,7 +69,13 @@
             <div class="bar"><div id="bar-fill"></div></div>
           </div>
 
-          <canvas id="viz" aria-label="Song map with waveform, beat grid and jump arcs. Click to seek."></canvas>
+          <div class="viz-wrap">
+            <canvas id="viz" aria-label="Song map with beats and jump branches. Tap to seek."></canvas>
+            <div class="seg small viz-layout" role="group" aria-label="Song map layout">
+              <button data-layout="wave" aria-pressed="true">Wave</button>
+              <button data-layout="circle" aria-pressed="false">Circle</button>
+            </div>
+          </div>
           <div id="section" class="section hidden">
             <div class="range">
               <div class="range-track"><div id="range-fill" class="range-fill"></div></div>
@@ -68,7 +84,10 @@
             </div>
             <div class="section-row">
               <span id="sec-label" class="sub">Full track</span>
-              <button id="sec-reset" class="link hidden">Reset to full track</button>
+              <span class="section-actions">
+                <label class="check small" title="Move the ends by up to two bars to where the loop seam matches best"><input id="seamless" type="checkbox" checked /> Seamless</label>
+                <button id="sec-reset" class="link hidden">Full track</button>
+              </span>
             </div>
           </div>
 
@@ -93,6 +112,13 @@
                 <option value="90">90m</option>
               </select>
             </label>
+          </div>
+          <div id="style-row" class="style-row">
+            <span class="k">Style</span>
+            <div class="seg small" role="group" aria-label="Endless style">
+              <button data-style="smooth" aria-pressed="true">Smooth</button>
+              <button data-style="jumpy" aria-pressed="false">Jumpy</button>
+            </div>
           </div>
           <p id="mode-hint" class="mode-hint"></p>
           <div class="clock">
@@ -228,18 +254,20 @@
       </section>
     </main>
 
-    <div id="now-playing" class="now-playing hidden">
-      <button id="np-open" class="np-open">
-        <span id="np-eq" class="np-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-        <span class="np-text">
-          <b id="now-title"></b>
-          <span id="np-sub"></span>
-        </span>
-        <span id="np-time" class="np-time"></span>
+    <nav id="tabbar" class="tabbar" aria-label="Views">
+      <button data-view="home" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h3v14H4zM9.5 5h3v14h-3zM15 5.6l2.9-.8 3.6 13.6-2.9.8z" fill="currentColor"/></svg>
+        <span>Library</span>
       </button>
-      <button id="np-play" class="np-play" aria-label="Play"></button>
-      <div class="np-bar" aria-hidden="true"><div id="np-fill"></div></div>
-    </div>
+      <button data-view="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 0 1 5.2 10.4l4.4 4.4-1.4 1.4-4.4-4.4A6.5 6.5 0 1 1 10.5 4zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z" fill="currentColor"/></svg>
+        <span>Find music</span>
+      </button>
+      <button data-view="app" disabled>
+        <span id="tab-eq" class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span id="tab-player">Player</span>
+      </button>
+    </nav>
 
     <footer>
       <div>Audio is processed locally and never uploaded. <button id="install" class="link hidden">Install app</button></div>

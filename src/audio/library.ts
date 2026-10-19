@@ -4,7 +4,7 @@
  * the SHA-256 of its bytes (the same key the analysis cache uses, so a
  * reopened song also skips analysis).
  */
-import { songInfo } from '../lyrics/search';
+import { songInfo, type SongInfo } from '../lyrics/search';
 import { hashBytes } from './cache';
 
 export interface LibrarySong {
@@ -53,14 +53,14 @@ export function persist(): void {
  * Add a file (no-op if the same audio is already there); returns its entry
  * and whether this call stored it.
  */
-export async function addSong(file: File): Promise<LibrarySong & { isNew: boolean }> {
+export async function addSong(file: File, known?: SongInfo): Promise<LibrarySong & { isNew: boolean }> {
   const id = await hashBytes(await file.arrayBuffer());
   const existing = await run<Stored>('readonly', (s) => s.get(id));
   if (existing) {
     const { blob: _b, ...meta } = existing;
     return { ...meta, isNew: false };
   }
-  const info = await songInfo(file);
+  const info = known ?? await songInfo(file);
   const entry: Stored = {
     id, name: file.name, title: info.title, artist: info.artist, type: file.type, size: file.size,
     duration: 0, addedAt: Date.now(), playedAt: 0, blob: file,
@@ -120,7 +120,7 @@ export function directAudioUrl(input: string): string {
 }
 
 /** Download an audio file from a link, with progress. Throws a readable error. */
-export async function fetchAudioFile(input: string, onProgress?: (f: number) => void, fetchFn: typeof fetch = fetch): Promise<File> {
+export async function fetchAudioFile(input: string, onProgress?: (f: number) => void, fetchFn: typeof fetch = fetch, nameHint?: string): Promise<File> {
   let url: string;
   try { url = directAudioUrl(input); } catch { throw new Error('That is not a valid link.'); }
   let res: Response;
@@ -149,7 +149,7 @@ export async function fetchAudioFile(input: string, onProgress?: (f: number) => 
   }
   const fromPath = decodeURIComponent(new URL(res.url || url).pathname.split('/').pop() || '') || 'audio';
   const disposition = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(res.headers.get('content-disposition') ?? '')?.[1];
-  const name = disposition ? decodeURIComponent(disposition) : fromPath;
+  const name = nameHint ?? (disposition ? decodeURIComponent(disposition) : fromPath);
   return new File(parts as BlobPart[], name, { type: type.split(';')[0] || 'audio/mpeg' });
 }
 
