@@ -1060,6 +1060,9 @@ async function addFiles(files: File[]) {
   if (first) void openSong(first.id);
 }
 
+// The iOS app passes in audio opened from other apps ("Open in stems") through this.
+(window as Window & { stems?: { addFiles: (files: File[]) => Promise<void> } }).stems = { addFiles };
+
 async function openSong(id: string) {
   const f = await songFile(id);
   const e = librarySongs.find((s) => s.id === id);
