@@ -1,12 +1,14 @@
 import AVFoundation
 import SwiftUI
 
-/// Native shell around the stems web app: the engine, UI and library all run
-/// in the web view; the shell adds background audio, saving exports, opening
-/// audio from other apps, and the app icon.
+/// Native shell around the stems web app: the engine, library and most of the
+/// UI run in the web view; the shell adds SwiftUI playback controls and tab
+/// bar, background audio, saving exports, opening audio from other apps, and
+/// the app icon.
 @main
 struct StemsApp: App {
     @StateObject private var inbox = Inbox()
+    @StateObject private var bridge = WebBridge()
 
     init() {
         // Music playback: keeps playing with the screen locked and ignores the
@@ -17,10 +19,15 @@ struct StemsApp: App {
 
     var body: some Scene {
         WindowGroup {
-            StemsWebView(url: AppConfig.startURL, inbox: inbox)
-                .ignoresSafeArea()
-                .background(Color(uiColor: .stemsBackground).ignoresSafeArea())
-                .onOpenURL { inbox.receive($0) }
+            ZStack(alignment: .bottom) {
+                StemsWebView(url: AppConfig.startURL, inbox: inbox, bridge: bridge)
+                    .ignoresSafeArea()
+                // Native tab bar and playback controls, once the page reports in.
+                NativeChrome(bridge: bridge)
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+            }
+            .background(Color(uiColor: .stemsBackground).ignoresSafeArea())
+            .onOpenURL { inbox.receive($0) }
         }
     }
 }

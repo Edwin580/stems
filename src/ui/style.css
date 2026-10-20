@@ -339,3 +339,161 @@ html { touch-action: manipulation; }
   .tabs { margin-left: -16px; margin-right: -16px; padding: 0 16px; overflow-x: auto; scrollbar-width: none; }
   .tabs::-webkit-scrollbar { display: none; }
 }
+
+/* ---- iOS look ------------------------------------------------------------------
+   On iPhone, iPad and in the iOS app (html.ios, set in index.html): the system
+   font, iOS system colours, inset grouped lists, iOS segmented controls,
+   switches and sliders. stems keeps its own tint colour. */
+html.ios {
+  --bg: #000000;
+  --surface: #1c1c1e;
+  --surface-2: #2c2c2e;
+  --line: rgba(84, 84, 88, 0.6);
+  --line-strong: rgba(84, 84, 88, 0.9);
+  --text: #ffffff;
+  --sub: rgba(235, 235, 245, 0.6);
+  --faint: rgba(235, 235, 245, 0.3);
+  --card: #1c1c1e;
+  --seg-track: rgba(118, 118, 128, 0.24);
+  --seg-thumb: #636366;
+  --switch-off: rgba(120, 120, 128, 0.32);
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter Variable', system-ui, sans-serif;
+  --mono: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --r: 10px;
+}
+@media (prefers-color-scheme: light) {
+  html.ios {
+    --bg: #f2f2f7;
+    --surface: #ffffff;
+    --surface-2: #e5e5ea;
+    --line: rgba(60, 60, 67, 0.29);
+    --line-strong: rgba(60, 60, 67, 0.36);
+    --text: #000000;
+    --sub: rgba(60, 60, 67, 0.6);
+    --faint: rgba(60, 60, 67, 0.3);
+    --card: #ffffff;
+    --seg-track: rgba(118, 118, 128, 0.12);
+    --seg-thumb: #ffffff;
+    --switch-off: rgba(120, 120, 128, 0.16);
+  }
+}
+html.ios body { font-size: 17px; letter-spacing: -0.41px; font-feature-settings: normal; }
+/* Numbers line up (the default look uses a monospace font for this). */
+html.ios :is(.mono, .k, .clock, .stats, .q, #pct, #spct, #sleep-left, #lyr-offset, #lib-count, .lib .open span, .loops .meta span, #sec-label) {
+  font-variant-numeric: tabular-nums; letter-spacing: 0;
+}
+html.ios :is(.k, .clock .k, .sleep .k, .style-row .k) { text-transform: none; letter-spacing: -0.08px; font-size: 13px; }
+
+/* Type: large title, grouped-list section headers. */
+html.ios h1 { font-size: 34px; line-height: 1.1; letter-spacing: 0.37px; font-weight: 700; }
+html.ios h2 { font-family: var(--font); font-size: 13px; font-weight: 400; letter-spacing: -0.08px; color: var(--sub); margin: 28px 16px 7px; }
+html.ios .brand { font-size: 17px; font-weight: 600; letter-spacing: -0.41px; }
+html.ios .track { font-size: 28px; font-weight: 700; letter-spacing: 0.36px; }
+html.ios .hint, html.ios .mode-hint { font-size: 15px; letter-spacing: -0.24px; }
+
+/* Buttons: tinted, rounded, 44pt targets; the primary action is filled. */
+html.ios button { font-size: 17px; letter-spacing: -0.41px; font-weight: 400; border-radius: 12px; min-height: 44px; padding: 11px 16px; background: var(--surface-2); }
+html.ios button.primary { background: var(--primary-bg); color: var(--primary-ink); font-weight: 600; border-radius: 14px; }
+html.ios .lib .lib-play { background: var(--primary-bg); color: var(--primary-ink); }
+html.ios button.round { min-height: 0; border-radius: 50%; }
+html.ios button.icon { min-height: 0; background: none; color: var(--accent); }
+html.ios button.link { background: none; color: var(--accent); text-decoration: none; min-height: 0; padding: 4px 0; }
+html.ios button.ghost { background: none; color: var(--accent); min-height: 0; }
+html.ios header button { border: 0; background: none; color: var(--accent); min-height: 0; font-size: 17px; }
+html.ios button:active:not(:disabled) { opacity: 0.6; transition: none; }
+
+/* Fields and pop-up menus. */
+html.ios input:not([type=checkbox]):not([type=range]) { background: var(--surface); border: 0; border-radius: 10px; font-size: 17px; padding: 11px 14px; }
+html.ios select {
+  background-color: var(--seg-track); border: 0; border-radius: 8px; color: var(--text); font: 400 15px/1.3 var(--font);
+  padding: 6px 26px 6px 10px; min-height: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 16'%3E%3Cpath d='M1.5 6 5 2.5 8.5 6M1.5 10 5 13.5 8.5 10' fill='none' stroke='%238e8e93' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 9px center; background-size: 8px 13px;
+}
+html.ios .sleep select { font-family: var(--font); font-size: 15px; background-color: var(--seg-track); padding: 6px 26px 6px 10px; }
+
+/* Segmented controls. */
+html.ios .seg { background: var(--seg-track); border-radius: 9px; padding: 2px; gap: 0; }
+html.ios .seg button { min-height: 0; border-radius: 7px; padding: 6px 18px; font-size: 13px; font-weight: 500; letter-spacing: -0.08px; color: var(--text); background: none; }
+html.ios .seg button[aria-pressed=true] { background: var(--seg-thumb); font-weight: 600; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.12), 0 3px 1px rgba(0, 0, 0, 0.04); }
+html.ios .seg.small button { padding: 5px 14px; font-size: 13px; }
+html.ios .transport .seg button { padding: 7px 18px; }
+
+/* Switches instead of checkboxes. */
+html.ios input[type=checkbox] {
+  -webkit-appearance: none; appearance: none; position: relative; flex: none; cursor: pointer;
+  width: 51px; height: 31px; border-radius: 16px; margin: 0; background: var(--switch-off); transition: background 0.2s;
+}
+html.ios input[type=checkbox]::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15), 0 3px 1px rgba(0, 0, 0, 0.06); transition: transform 0.2s;
+}
+html.ios input[type=checkbox]:checked { background: #34c759; }
+html.ios input[type=checkbox]:checked::after { transform: translateX(20px); }
+html.ios input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+html.ios .check.small input[type=checkbox] { width: 42px; height: 26px; }
+html.ios .check.small input[type=checkbox]::after { width: 22px; height: 22px; }
+html.ios .check.small input[type=checkbox]:checked::after { transform: translateX(16px); }
+/* Settings-style rows: label on the left, switch on the right. */
+html.ios .check:not(.small) { justify-content: space-between; flex-direction: row-reverse; gap: 16px; padding: 6px 0; }
+html.ios .checks { border: 0; background: var(--surface); border-radius: 10px; padding: 4px 16px; gap: 0; }
+html.ios .checks .check:not(:last-child) { border-bottom: 0.5px solid var(--line); }
+
+/* Sliders (mixer, settings); the section handles keep their own shape. */
+html.ios :is(.stem, .ctl) input[type=range] { -webkit-appearance: none; appearance: none; height: 28px; background: none; }
+html.ios :is(.stem, .ctl) input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--switch-off); }
+html.ios :is(.stem, .ctl) input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 28px; height: 28px; margin-top: -12px; border-radius: 50%; background: #fff;
+  box-shadow: 0 0.5px 4px rgba(0, 0, 0, 0.12), 0 6px 13px rgba(0, 0, 0, 0.12);
+}
+html.ios .range input::-webkit-slider-thumb { background: #fff; border-color: var(--bg); }
+
+/* Inset grouped lists: library, loops, lyric search results. */
+html.ios :is(.lib, .loops, .results) { background: var(--surface); border: 0; border-radius: 10px; overflow: hidden; }
+html.ios :is(.lib, .loops, .results) li { border: 0; padding-left: 16px; padding-right: 8px; position: relative; }
+html.ios :is(.lib, .loops, .results) li:not(:last-child)::after { content: ''; position: absolute; left: 16px; right: 0; bottom: 0; height: 0.5px; background: var(--line); }
+html.ios .lib .open, html.ios .loops .meta { min-height: 0; padding: 11px 0; border-radius: 0; background: none; }
+html.ios .lib .open b, html.ios .loops .meta b { font-weight: 400; font-size: 17px; }
+html.ios .lib .open span, html.ios .loops .meta .d { font-size: 13px; }
+html.ios .lib .rm { min-height: 0; color: #ff3b30; font-size: 15px; }
+html.ios .lib .lib-play { min-height: 0; }
+html.ios .loops .meta[aria-pressed=true] { box-shadow: none; padding-left: 0; }
+html.ios .loops .q { font-size: 11px; border-radius: 6px; text-transform: none; letter-spacing: 0; }
+@media (hover: hover) { html.ios :is(.lib, .loops) li:hover { background: var(--surface-2); } }
+
+/* Home: the drop zone as a grouped card. */
+html.ios .drop { background: var(--surface); border: 0; border-radius: 12px; }
+html.ios .drop.compact { border: 0; }
+
+/* Player sub-tabs as capsules (like the filter chips in Music). */
+html.ios .tabs { border: 0; gap: 8px; margin: 22px 0 16px; }
+html.ios .tab { min-height: 0; padding: 7px 14px; border-radius: 16px; background: var(--seg-track); color: var(--text); font-size: 15px; font-weight: 500; }
+html.ios .tab.active { background: var(--text); color: var(--bg); }
+html.ios .tab.active::after { display: none; }
+
+/* Option cards (stem separators). */
+html.ios .choice { border: 0; border-radius: 12px; background: var(--surface); min-height: 0; }
+html.ios .adv summary { font-family: var(--font); text-transform: none; letter-spacing: -0.24px; font-size: 15px; color: var(--sub); }
+html.ios .clock { border-top: 0.5px solid var(--line); }
+html.ios .stats { border-top: 0.5px solid var(--line); }
+
+/* Tab bar: system material, 10pt labels, tinted when selected. */
+html.ios .tabbar {
+  border-top: 0.5px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8); backdrop-filter: blur(20px) saturate(1.8);
+}
+html.ios .tabbar button { min-height: 49px; padding: 4px; background: none; border-radius: 0; font-size: 10px; font-weight: 500; letter-spacing: 0.1px; color: #8e8e93; }
+html.ios .tabbar button[aria-current=page] { color: var(--accent); }
+html.ios .tabbar button[aria-current=page] svg { color: var(--accent); }
+html.ios .tabbar svg, html.ios .tabbar .eq { width: 25px; height: 25px; }
+
+/* ---- In the iOS app ------------------------------------------------------------
+   The app draws the tab bar, play button, mode, style and sleep controls in
+   SwiftUI (see ios/Stems/NativeChrome.swift); the page hides its own copies
+   and leaves room for the app's bar, whose height it is told as --native-bar. */
+html.native-shell #tabbar,
+html.native-shell .transport,
+html.native-shell #style-row { display: none !important; }
+html.native-shell body { padding-bottom: calc(var(--native-bar, 140px) + env(safe-area-inset-bottom) + 16px); }
+html.native-shell footer { padding-bottom: 0; }

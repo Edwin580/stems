@@ -4,7 +4,7 @@ name: Stems
 options:
   bundleIdPrefix: io.github.edwin580
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
   createIntermediateGroups: true
 settings:
   base:

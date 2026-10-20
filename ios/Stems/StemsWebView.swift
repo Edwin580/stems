@@ -7,8 +7,9 @@ import WebKit
 struct StemsWebView: UIViewRepresentable {
     let url: URL
     let inbox: Inbox
+    let bridge: WebBridge
 
-    func makeCoordinator() -> Coordinator { Coordinator(inbox: inbox) }
+    func makeCoordinator() -> Coordinator { Coordinator(inbox: inbox, bridge: bridge) }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -17,6 +18,8 @@ struct StemsWebView: UIViewRepresentable {
         config.allowsAirPlayForMediaPlayback = true
         // Needed for the service worker (offline shell, shared memory); see WKAppBoundDomains.
         config.limitsNavigationsToAppBoundDomains = true
+        // The page reports its controls' state here; see WebBridge.
+        config.userContentController.add(BridgeMessageHandler(bridge: bridge), name: BridgeMessageHandler.name)
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -29,7 +32,7 @@ struct StemsWebView: UIViewRepresentable {
         webView.scrollView.backgroundColor = .stemsBackground
         webView.underPageBackgroundColor = .stemsBackground
         #if DEBUG
-        if #available(iOS 16.4, *) { webView.isInspectable = true }
+        webView.isInspectable = true
         #endif
 
         context.coordinator.attach(webView)
@@ -42,18 +45,21 @@ struct StemsWebView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
         private let inbox: Inbox
+        private let bridge: WebBridge
         private weak var webView: WKWebView?
         private var pageReady = false
         private var delivering = false
         private var inboxWatch: AnyCancellable?
         private var downloads: [ObjectIdentifier: URL] = [:]
 
-        init(inbox: Inbox) {
+        init(inbox: Inbox, bridge: WebBridge) {
             self.inbox = inbox
+            self.bridge = bridge
         }
 
         func attach(_ webView: WKWebView) {
             self.webView = webView
+            bridge.webView = webView
             inboxWatch = inbox.$pending
                 .receive(on: RunLoop.main)
                 .sink { [weak self] urls in if !urls.isEmpty { self?.deliverInbox() } }
@@ -127,6 +133,7 @@ struct StemsWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             pageReady = false
+            bridge.pageWillLoad()
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -165,6 +172,7 @@ struct StemsWebView: UIViewRepresentable {
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             // Usually memory pressure (stems of a long song are large): start fresh.
             pageReady = false
+            bridge.pageWillLoad()
             webView.reload()
         }
 
