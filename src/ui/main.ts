@@ -983,7 +983,8 @@ function updateMediaSession() {
     title: song.title || 'stems',
     artist: song.artist || 'stems',
     album: 'stems · endless',
-    artwork: [{ src: new URL('./icon-512.png', location.href).href, sizes: '512x512', type: 'image/png' }],
+    // Square and opaque: iOS rounds lock-screen artwork itself and shows transparent corners as white.
+    artwork: [{ src: new URL('./artwork-512.png', location.href).href, sizes: '512x512', type: 'image/png' }],
   });
   navigator.mediaSession.setActionHandler('play', () => { void player?.play().then(updatePlayButton); });
   navigator.mediaSession.setActionHandler('pause', () => { player?.pause(); updatePlayButton(); });
