@@ -10,7 +10,7 @@
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <script>
-      // iOS look (system font, grouped lists, switches) on iPhone, iPad and in the iOS app, set
+      // iOS look (system font, grouped lists, switches) on iPhone and iPad, set
       // before first paint. ?look=ios or ?look=default overrides it and is remembered.
       (function () {
         var look = null;
@@ -20,12 +20,11 @@
           else look = localStorage.getItem('stems.look');
         } catch (e) {}
         var apple = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-        var shell = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.stemsNative);
-        if (look === 'ios' || (look !== 'default' && (apple || shell))) document.documentElement.classList.add('ios');
+        if (look === 'ios' || (look !== 'default' && apple)) document.documentElement.classList.add('ios');
       })();
     </script>
-    <script type="module" crossorigin src="./assets/index-5Obwmzj0.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-Cff_tfrb.css">
+    <script type="module" crossorigin src="./assets/index-LiKVAjYj.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Ar3cJ7tm.css">
   </head>
   <body>
     <header>
