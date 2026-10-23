@@ -346,7 +346,7 @@ html { touch-action: manipulation; }
 }
 
 /* ---- iOS look ------------------------------------------------------------------
-   On iPhone, iPad and in the iOS app (html.ios, set in index.html): the system
+   On iPhone and iPad (html.ios, set in index.html): the system
    font, iOS system colours, inset grouped lists, iOS segmented controls,
    switches and sliders. stems keeps its own tint colour. */
 html.ios {
@@ -498,16 +498,6 @@ html.ios .tabbar button[aria-current=page] { color: var(--accent); }
 html.ios .tabbar button[aria-current=page] svg { color: var(--accent); }
 html.ios .tabbar svg, html.ios .tabbar .eq { width: 25px; height: 25px; }
 
-/* ---- In the iOS app ------------------------------------------------------------
-   The app draws the tab bar, play button, mode, style and sleep controls in
-   SwiftUI (see ios/Stems/NativeChrome.swift); the page hides its own copies
-   and leaves room for the app's bar, whose height it is told as --native-bar. */
-html.native-shell #tabbar,
-html.native-shell .transport,
-html.native-shell #style-row { display: none !important; }
-html.native-shell body { padding-bottom: calc(var(--native-bar, 140px) + env(safe-area-inset-bottom) + 16px); }
-html.native-shell footer { padding-bottom: 0; }
-
 /* ---- Loop views (List, Lanes, Rings; src/ui/loopviz.ts) ------------------------------ */
 .loop-views { margin: 0 0 12px; }
 .loop-viz { margin: 0 0 16px; }
@@ -583,5 +573,4 @@ html.ios .lib li.swipe::after { z-index: 2; }
 .toast.on { opacity: 1; transform: translate(-50%, 0); }
 .toast > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #toast-action { flex: none; min-height: 0; padding: 6px 8px; color: inherit; font-weight: 650; text-decoration: none; background: none; }
-html.native-shell .toast { bottom: calc(var(--native-bar, 140px) + env(safe-area-inset-bottom) + 12px); }
 @media (prefers-reduced-motion: reduce) { .toast, .lib li.swipe { transition: none; } }

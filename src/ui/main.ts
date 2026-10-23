@@ -16,7 +16,6 @@ import { lineAt, parseLrc, type LyricLine } from '../lyrics/lrc';
 import { searchLyrics, songInfo, type LyricsResult, type SongInfo } from '../lyrics/search';
 import { ensureIsolationState, setIsolation } from './isolation';
 import { LoopViz, type LoopView } from './loopviz';
-import { nativeCommand, type NativeCommand } from './native';
 import { swipeToDelete } from './swipe';
 import { Visualizer } from './visualizer';
 
@@ -1088,15 +1087,6 @@ async function addFiles(files: File[]) {
   if (first) void openSong(first.id);
 }
 
-// The iOS app passes in audio opened from other apps ("Open in stems") and
-// drives the page from its native controls (see native.ts) through this.
-// `player` is for automated testing and console tinkering.
-(window as unknown as { stems: unknown }).stems = {
-  addFiles,
-  command: (c: NativeCommand) => nativeCommand(c),
-  get player() { return player; },
-};
-
 async function openSong(id: string) {
   const f = await songFile(id);
   const e = librarySongs.find((s) => s.id === id);
@@ -1318,4 +1308,7 @@ function frame() {
 }
 updatePlayButton();
 requestAnimationFrame(frame);
+
+// Expose for automated testing / console tinkering.
+(window as unknown as { stems: unknown }).stems = { get player() { return player; } };
 
