@@ -16,7 +16,8 @@ struct WebState: Decodable, Equatable {
     var style: String
     var sleep: String
     var sleepOptions: [Option]
-    var sleepLeft: String
+    /// When the sleep timer ends (ms since 1970), 0 when off.
+    var sleepAt: Double
     var title: String
     var artist: String
 }

@@ -1167,6 +1167,12 @@ lq?.setConsumer(async (params) => {
 
 // ---- Drawing --------------------------------------------------------------------------------
 
+/** Writing the same text still costs a style and layout pass, every frame. */
+function setText(id: string, text: string) {
+  const el = $(id);
+  if (el.textContent !== text) el.textContent = text;
+}
+
 function frame() {
   const p = player;
   if (p?.source) updatePlayButton();
@@ -1176,11 +1182,10 @@ function frame() {
       ? p.stems.names.map((n, i) => ({ n, i })).filter(({ i }) => p.locked[i]).map(({ n, i }) => ({ pos: p.stemPositions[i] ?? 0, label: n }))
       : [];
     viz.draw(pos, p.queue, heads);
-    $('listened').textContent = fmt(p.listenedSec);
-    $('posn').textContent = fmt(pos / p.source.sampleRate);
-    $('jumps').textContent = String(p.jumpCount);
-    $('sleep-left').textContent = p.sleepAt ? fmt((p.sleepAt - Date.now()) / 1000) : '';
-    updatePlayButton();
+    setText('listened', fmt(p.listenedSec));
+    setText('posn', fmt(pos / p.source.sampleRate));
+    setText('jumps', String(p.jumpCount));
+    setText('sleep-left', p.sleepAt ? fmt((p.sleepAt - Date.now()) / 1000) : '');
     if (lyricLines.length) {
       const idx = lineAt(lyricLines, pos / p.source.sampleRate - lyricOffset);
       // Current line in the player card, so it can be followed from any tab.

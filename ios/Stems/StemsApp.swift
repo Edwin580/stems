@@ -47,10 +47,11 @@ enum AppConfig {
 }
 
 extension UIColor {
-    /// The web app's page background, so there is no flash while it loads.
+    /// The page background of the web app's iOS look (--bg under html.ios),
+    /// so loading and overscroll show no seam.
     static let stemsBackground = UIColor { traits in
         traits.userInterfaceStyle == .light
-            ? UIColor(red: 0xf3 / 255, green: 0xf3 / 255, blue: 0xef / 255, alpha: 1)
-            : UIColor(red: 0x0b / 255, green: 0x0b / 255, blue: 0x0c / 255, alpha: 1)
+            ? UIColor(red: 0xf2 / 255, green: 0xf2 / 255, blue: 0xf7 / 255, alpha: 1)
+            : .black
     }
 }

@@ -44,6 +44,7 @@ function state() {
   const play = q<HTMLButtonElement>('#play');
   const playerTab = q<HTMLButtonElement>('#tabbar [data-view=app]');
   const sleep = q<HTMLSelectElement>('#sleep');
+  const sleepAt = (window as Window & { stems?: { player?: { sleepAt?: number } | null } }).stems?.player?.sleepAt ?? 0;
   return {
     v: 1,
     view: q('#tabbar [aria-current=page]')?.dataset.view ?? 'home',
@@ -52,9 +53,11 @@ function state() {
     playing: play?.getAttribute('aria-label') === 'Pause',
     mode: pressed('data-mode') || 'endless',
     style: pressed('data-style') || 'smooth',
-    sleep: sleep?.value ?? '0',
+    // The timer clears itself without a change event: its end time is the truth.
+    sleep: sleepAt ? sleep?.value ?? '0' : '0',
     sleepOptions: sleep ? [...sleep.options].map((o) => ({ value: o.value, label: o.textContent ?? o.value })) : [],
-    sleepLeft: q('#sleep-left')?.textContent ?? '',
+    /** When the sleep timer ends (ms since 1970), 0 when off; the app counts down itself. */
+    sleepAt,
     title: q('#track')?.textContent || q('#tab-player')?.textContent || '',
     artist: q('#artist')?.textContent ?? '',
   };
@@ -69,10 +72,27 @@ function report() {
   handler.postMessage(s);
 }
 
+/** Report once after a burst of changes (one tap can flip several attributes). */
+let pending = false;
+function schedule() {
+  if (pending) return;
+  pending = true;
+  queueMicrotask(() => { pending = false; report(); });
+}
+
 if (handler) {
   document.documentElement.classList.add('native-shell');
-  // The state is read off the page's own controls, so a cheap poll catches
-  // every change wherever it comes from (taps, the lock screen, the sleep timer).
-  setInterval(report, 250);
+  // The state is read off the page's own controls, so watching just those
+  // catches every change wherever it comes from (taps, the lock screen, the
+  // sleep timer), with no work at all while nothing changes.
+  const watch = new MutationObserver(schedule);
+  const attributeFilter = ['aria-pressed', 'aria-label', 'aria-current', 'disabled'];
+  for (const el of document.querySelectorAll('#play, [data-mode], [data-style], #tabbar [data-view]')) {
+    watch.observe(el, { attributes: true, attributeFilter });
+  }
+  for (const el of document.querySelectorAll('#track, #artist, #tab-player')) {
+    watch.observe(el, { childList: true, characterData: true, subtree: true });
+  }
+  document.querySelector('#sleep')?.addEventListener('change', schedule);
   report();
 }

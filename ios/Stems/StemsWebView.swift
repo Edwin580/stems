@@ -105,9 +105,14 @@ struct StemsWebView: UIViewRepresentable {
                     let end = min(offset + chunk, data.count)
                     _ = try await webView.callAsyncJavaScript(
                         """
-                        const s = atob(b64);
-                        const u = new Uint8Array(s.length);
-                        for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+                        let u;
+                        if (Uint8Array.fromBase64) {
+                            u = Uint8Array.fromBase64(b64); // native decode (Safari 18.2+)
+                        } else {
+                            const s = atob(b64);
+                            u = new Uint8Array(s.length);
+                            for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+                        }
                         window.__stemsInbox[id].push(u);
                         """,
                         arguments: ["id": id, "b64": data[offset..<end].base64EncodedString()], contentWorld: .page)

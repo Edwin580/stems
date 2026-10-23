@@ -3,7 +3,17 @@ import type { LoopCandidate } from '../engine/loops';
 import type { Edge } from '../engine/similarity';
 import type { Jump } from '../engine/splicer';
 
-const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+/**
+ * Theme colours, read once per static redraw (song, size, layout or colour
+ * scheme change) instead of several times a frame: getComputedStyle forces a
+ * style recalculation whenever the page has changed since the last one.
+ */
+const colours = new Map<string, string>();
+const css = (name: string) => {
+  let v = colours.get(name);
+  if (v === undefined) colours.set(name, (v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()));
+  return v;
+};
 
 /**
  * Song map in two layouts. Wave: waveform, beat grid, jump arcs above,
@@ -26,6 +36,8 @@ export class Visualizer {
   private section: [number, number] | null = null;
   private dpr = 1;
   private layout: 'wave' | 'circle' = 'wave';
+  /** What the last frame showed; an identical frame is skipped (a paused song redraws nothing). */
+  private shown = '';
   onSeek: (sample: number) => void = () => {};
 
   constructor(canvas: HTMLCanvasElement) {
@@ -114,7 +126,7 @@ export class Visualizer {
   }
 
   /** Shade everything outside [start, end) samples (null = whole song). */
-  setSection(section: [number, number] | null) { this.section = section; }
+  setSection(section: [number, number] | null) { this.section = section; this.shown = ''; }
 
   private resize() {
     this.dpr = window.devicePixelRatio || 1;
@@ -138,6 +150,8 @@ export class Visualizer {
   }
 
   private drawStatic() {
+    colours.clear();
+    this.shown = '';
     if (this.layout === 'circle') { this.drawCircleStatic(); return; }
     const g = this.layer.getContext('2d')!;
     const W = this.layer.width, H = this.layer.height;
@@ -251,6 +265,11 @@ export class Visualizer {
   draw(position: number, queue: readonly Jump[], lockedHeads: { pos: number; label: string }[] = []) {
     const g = this.ctx;
     const W = this.canvas.width, H = this.canvas.height;
+    // Playhead to the device pixel (wave) or a tenth of a degree (circle).
+    const at = (s: number) => Math.round(this.layout === 'circle' ? (s / this.length) * 3600 : this.x(s));
+    const key = [at(position), queue[0]?.at, queue[0]?.to, this.flash ? performance.now() : 0, ...lockedHeads.map((h) => at(h.pos))].join();
+    if (key === this.shown) return;
+    this.shown = key;
     g.clearRect(0, 0, W, H);
     g.drawImage(this.layer, 0, 0);
     if (!this.analysis) {

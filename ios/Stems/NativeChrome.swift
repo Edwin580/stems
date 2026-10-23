@@ -106,9 +106,16 @@ private struct SleepMenu: View {
             VStack(spacing: 2) {
                 Image(systemName: state.sleep == "0" ? "moon.zzz" : "moon.zzz.fill")
                     .font(.system(size: 20))
-                Text(state.sleepLeft.isEmpty ? "Sleep" : state.sleepLeft)
-                    .font(.caption2.monospacedDigit())
-                    .lineLimit(1)
+                Group {
+                    if state.sleepAt > 0 {
+                        // Counts down on its own; the page doesn't need to send updates.
+                        Text(Date(timeIntervalSince1970: state.sleepAt / 1000), style: .timer)
+                    } else {
+                        Text("Sleep")
+                    }
+                }
+                .font(.caption2.monospacedDigit())
+                .lineLimit(1)
             }
             .frame(minWidth: 44, minHeight: 44)
             .foregroundStyle(state.sleep == "0" ? Color.secondary : Color.stemsTint)
