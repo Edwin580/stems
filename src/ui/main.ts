@@ -15,7 +15,9 @@ import { alignLoopsToLyrics, linesInLoop, lyricBoundaryPenalty } from '../lyrics
 import { lineAt, parseLrc, type LyricLine } from '../lyrics/lrc';
 import { searchLyrics, songInfo, type LyricsResult, type SongInfo } from '../lyrics/search';
 import { ensureIsolationState, setIsolation } from './isolation';
+import { LoopViz, type LoopView } from './loopviz';
 import { nativeCommand, type NativeCommand } from './native';
+import { swipeToDelete } from './swipe';
 import { Visualizer } from './visualizer';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -243,7 +245,7 @@ function onAnalysed(fromCache: boolean) {
   // The player starts each song from defaults: carry over what the controls show.
   p.updateSettings(settingsFromControls());
   // Loop picked while the analysis ran.
-  if (document.querySelector<HTMLButtonElement>('.seg [aria-pressed=true]')?.dataset.mode === 'loop') setMode('loop');
+  if (document.querySelector<HTMLButtonElement>('[data-mode][aria-pressed=true]')?.dataset.mode === 'loop') setMode('loop');
   syncControls();
   initSection();
   if (lyricLines.length) applyLyricPenalty();
@@ -548,6 +550,25 @@ function displayedLoops(): LoopCandidate[] {
 }
 $('lyric-align').addEventListener('change', () => renderLoops());
 
+/** Loop list view (persisted): List, Lanes or Rings; see loopviz.ts. */
+let loopView: LoopView = (() => {
+  try { const v = localStorage.getItem('stems.loopView'); return v === 'lanes' || v === 'rings' ? v : 'list'; } catch { return 'list'; }
+})();
+const loopViz = new LoopViz($('loop-viz'));
+function setLoopView(v: LoopView) {
+  loopView = v;
+  try { localStorage.setItem('stems.loopView', v); } catch { /* ignore */ }
+  document.querySelectorAll<HTMLButtonElement>('[data-loopview]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.loopview === v)));
+  renderLoops();
+}
+document.querySelectorAll<HTMLButtonElement>('[data-loopview]').forEach((b) => b.addEventListener('click', () => setLoopView(b.dataset.loopview as LoopView)));
+setLoopView(loopView);
+
+async function useLoop(l: LoopCandidate) {
+  selectLoop(l);
+  if (!player?.playing) await togglePlay();
+}
+
 function renderLoops() {
   const p = player;
   const ol = $('loops');
@@ -555,25 +576,29 @@ function renderLoops() {
   ol.innerHTML = '';
   const loops = displayedLoops();
   $('lyric-align-row').classList.toggle('hidden', lyricLines.length === 0);
+  const sr = p.source!.sampleRate;
+  const sel = currentMode() === 'loop' ? p.currentSettings.loop ?? null : null;
+  show('loop-views', loops.length > 1);
+  loopViz.render(loops.length ? loopView : 'list', loops, {
+    length: p.source.length, sampleRate: sr, selected: sel, fmt,
+    grade: seamGrade, label: (l) => seamLabel(l).toLowerCase(), onPick: (l) => void useLoop(l),
+  });
+  // The list stays under the picture views too: it has the seam preview and download buttons.
   if (!loops.length) {
     ol.innerHTML = '<li class="empty">No loop of 8+ bars passed the seam check for this song. Endless mode still works.</li>';
     return;
   }
-  const sr = p.source!.sampleRate;
-  const sel = currentMode() === 'loop' ? p.currentSettings.loop : null;
   loops.forEach((l, i) => {
     const li = document.createElement('li');
     const active = !!sel && sel.startSample === l.startSample && sel.endSample === l.endSample;
     li.classList.toggle('sel', active);
     const lyricNote = lyricLines.length ? `, ${linesInLoop(l, lyricLines, sr).length} lyric lines` : '';
+    const a = (l.startSample / p.source!.length) * 100, w = ((l.endSample - l.startSample) / p.source!.length) * 100;
     li.innerHTML = `
-      <button data-act="use" class="meta" aria-pressed="${active}"><b>Loop ${i + 1}</b><span class="q ${seamGrade(l)}" title="Waveform correlation ${Math.round(l.rho * 100)}%, spectral step ${l.spectralDb.toFixed(1)} dB">${seamLabel(l)}</span><span class="d">${l.bars} bars · ${fmt(l.startSample / sr)}-${fmt(l.endSample / sr)} · ${fmt(l.seconds)}${lyricNote}</span></button>
+      <button data-act="use" class="meta" aria-pressed="${active}"><b>Loop ${i + 1}</b><span class="q ${seamGrade(l)}" title="Waveform correlation ${Math.round(l.rho * 100)}%, spectral step ${l.spectralDb.toFixed(1)} dB">${seamLabel(l)}</span><span class="d">${l.bars} bars · ${fmt(l.startSample / sr)}-${fmt(l.endSample / sr)} · ${fmt(l.seconds)}${lyricNote}</span><span class="span" aria-hidden="true"><i style="left:${a.toFixed(2)}%;width:${Math.max(0.8, w).toFixed(2)}%"></i></span></button>
       <button data-act="seam" class="icon" aria-label="Preview the seam of loop ${i + 1}" title="Play the four seconds before the seam">${ICON_SEAM}</button>
       <button data-act="wav" class="icon" aria-label="Download loop ${i + 1} as WAV" title="One cycle as WAV with loop points">${ICON_DOWNLOAD}</button>`;
-    li.querySelector<HTMLButtonElement>('[data-act=use]')!.onclick = async () => {
-      selectLoop(l);
-      if (!p.playing) await togglePlay();
-    };
+    li.querySelector<HTMLButtonElement>('[data-act=use]')!.onclick = () => useLoop(l);
     li.querySelector<HTMLButtonElement>('[data-act=seam]')!.onclick = async () => {
       selectLoop(l);
       p.seek(Math.max(l.startSample, l.endSample - 4 * sr));
@@ -945,6 +970,7 @@ function applyShareMix() {
 
 const ICON_SEAM = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 4v6h-6l2.3-2.3A6 6 0 1 0 18 12h2a8 8 0 0 1-16 0z" fill="currentColor"/></svg>';
 const ICON_DOWNLOAD = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M11 4h2v9.2l3.3-3.3 1.4 1.4L12 17l-5.7-5.7 1.4-1.4 3.3 3.3zM5 19h14v2H5z" fill="currentColor"/></svg>';
+const ICON_TRASH = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4zM6 9h12l-1 12H7zm4 2v8h1.6v-8zm2.4 0v8H14v-8z" fill="currentColor"/></svg>';
 const ICON_PLAY = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>';
 const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>';
 let shownPlaying: boolean | null = null;
@@ -1084,24 +1110,81 @@ async function renderLibrary(reload = true) {
   show('library', librarySongs.length > 0);
   show('hero', librarySongs.length === 0 && !playing);
   $('drop').classList.toggle('compact', librarySongs.length > 0);
-  $('lib-count').textContent = librarySongs.length ? `${librarySongs.length}` : '';
+  const count = librarySongs.filter((s) => !hiddenSongs.has(s.id)).length;
+  $('lib-count').textContent = count ? `${count}` : '';
   const list = $('lib-list');
   list.innerHTML = '';
-  const shown = matchSongs(librarySongs, $<HTMLInputElement>('lib-q').value);
+  const shown = matchSongs(librarySongs.filter((s) => !hiddenSongs.has(s.id)), $<HTMLInputElement>('lib-q').value);
   if (!shown.length && librarySongs.length) list.innerHTML = '<li class="empty">No songs match.</li>';
   for (const s of shown) {
     const li = document.createElement('li');
     li.classList.toggle('current', s.id === currentSongId);
     const meta = [s.artist, s.duration ? fmt(s.duration) : '', `${(s.size / 1e6).toFixed(1)} MB`].filter(Boolean).join(' · ');
     const isCurrent = s.id === currentSongId && playing;
-    li.innerHTML = `${isCurrent ? `<button class="lib-play" aria-label="${player?.playing ? 'Pause' : 'Play'}">${player?.playing ? ICON_PAUSE : ICON_PLAY}</button>` : ''}<button class="open"><b>${esc(s.title || s.name)}</b><span>${esc(meta)}</span></button><button class="rm" aria-label="Remove ${esc(s.title || s.name)} from the library">Remove</button>`;
+    li.className = 'swipe';
+    li.innerHTML = `<div class="row">${isCurrent ? `<button class="lib-play" aria-label="${player?.playing ? 'Pause' : 'Play'}">${player?.playing ? ICON_PAUSE : ICON_PLAY}</button>` : ''}<button class="open"><b>${esc(s.title || s.name)}</b><span>${esc(meta)}</span></button></div><button class="rm" aria-label="Delete ${esc(s.title || s.name)} from the library">${ICON_TRASH}<span>Delete</span></button>`;
+    li.classList.toggle('current', s.id === currentSongId);
     li.querySelector<HTMLButtonElement>('.lib-play')?.addEventListener('click', togglePlay);
     li.querySelector<HTMLButtonElement>('.open')!.onclick = () => (isCurrent ? go('app') : void openSong(s.id));
-    li.querySelector<HTMLButtonElement>('.rm')!.onclick = async () => { await removeSong(s.id); if (s.id === currentSongId) currentSongId = ''; void renderLibrary(); };
+    li.querySelector<HTMLButtonElement>('.rm')!.onclick = () => deleteSong(s, li);
+    swipeToDelete(li, li.querySelector<HTMLElement>('.row')!, () => deleteSong(s, li));
     list.appendChild(li);
   }
 }
 $('lib-q').addEventListener('input', () => { void renderLibrary(false); });
+
+// ---- Deleting from the library (with undo) ---------------------------------------------
+
+/** Deleted rows stay out of the list while their undo is offered, and until storage catches up. */
+const hiddenSongs = new Set<string>();
+let pendingDelete: { id: string; timer: ReturnType<typeof setTimeout> } | null = null;
+
+async function commitDelete() {
+  const d = pendingDelete;
+  if (!d) return;
+  pendingDelete = null;
+  clearTimeout(d.timer);
+  hideToast();
+  try { await removeSong(d.id); } catch { /* storage blocked: it reappears on the next reload */ }
+  if (d.id === currentSongId) currentSongId = '';
+  hiddenSongs.delete(d.id);
+}
+
+function deleteSong(s: LibrarySong, li: HTMLElement) {
+  void commitDelete();
+  hiddenSongs.add(s.id);
+  pendingDelete = { id: s.id, timer: setTimeout(() => void commitDelete(), 5000) };
+  // Collapse the row, then redraw without it.
+  li.style.height = `${li.offsetHeight}px`;
+  requestAnimationFrame(() => li.classList.add('removing'));
+  setTimeout(() => void renderLibrary(false), 260);
+  toast(`Deleted “${s.title || s.name}”`, 'Undo', () => {
+    if (pendingDelete?.id !== s.id) return;
+    clearTimeout(pendingDelete.timer);
+    pendingDelete = null;
+    hiddenSongs.delete(s.id);
+    void renderLibrary(false);
+  });
+}
+// Leaving the page finishes a pending delete instead of dropping it.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void commitDelete(); });
+
+let toastAction: (() => void) | null = null;
+function toast(text: string, action: string, onAction: () => void) {
+  $('toast-text').textContent = text;
+  $('toast-action').textContent = action;
+  toastAction = onAction;
+  const el = $('toast');
+  el.hidden = false;
+  requestAnimationFrame(() => el.classList.add('on'));
+}
+function hideToast() {
+  const el = $('toast');
+  el.classList.remove('on');
+  toastAction = null;
+  setTimeout(() => { if (!el.classList.contains('on')) el.hidden = true; }, 250);
+}
+$('toast-action').addEventListener('click', () => { const a = toastAction; hideToast(); a?.(); });
 
 $<HTMLFormElement>('url-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1167,6 +1250,26 @@ lq?.setConsumer(async (params) => {
 
 // ---- Drawing --------------------------------------------------------------------------------
 
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+
+/**
+ * The player card's lyric line moves on: the next line rises into place as
+ * the current one, and a new next line fades in under it. Transform and
+ * opacity only, so it never re-lays out the page; the box keeps a fixed
+ * height (style.css) so nothing below it jumps either.
+ */
+function advanceNowLine(cur: string, next: string) {
+  const curEl = $('now-cur'), nextEl = $('now-next');
+  // Only animate the line actually moving up (not a seek, a lyric reload or an empty gap).
+  const rising = !!cur && cur === nextEl.textContent;
+  curEl.textContent = cur;
+  nextEl.textContent = next;
+  if (!rising || reducedMotion.matches) return;
+  curEl.animate([{ transform: 'translateY(1.1em) scale(0.84)', opacity: 0.45 }, { transform: 'none', opacity: 1 }], { duration: 360, easing: EASE });
+  nextEl.animate([{ transform: 'translateY(0.7em)', opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 360, delay: 90, easing: EASE, fill: 'backwards' });
+}
+
 /** Writing the same text still costs a style and layout pass, every frame. */
 function setText(id: string, text: string) {
   const el = $(id);
@@ -1186,6 +1289,7 @@ function frame() {
     setText('posn', fmt(pos / p.source.sampleRate));
     setText('jumps', String(p.jumpCount));
     setText('sleep-left', p.sleepAt ? fmt((p.sleepAt - Date.now()) / 1000) : '');
+    if (tab === 'loops' && loopView !== 'list') loopViz.playhead(pos / p.source.length);
     if (lyricLines.length) {
       const idx = lineAt(lyricLines, pos / p.source.sampleRate - lyricOffset);
       // Current line in the player card, so it can be followed from any tab.
@@ -1193,8 +1297,7 @@ function frame() {
       const cur = lyricLines[idx];
       const ended = !cur || pos / p.source.sampleRate - lyricOffset > Math.min(lyricLines[idx + 1]?.time ?? Infinity, cur.time + 8);
       const curText = ended ? '' : cur.text, nextText = lyricLines[idx + 1]?.text ?? '';
-      if ($('now-cur').textContent !== curText) $('now-cur').textContent = curText;
-      if ($('now-next').textContent !== nextText) $('now-next').textContent = nextText;
+      if ($('now-cur').textContent !== curText || $('now-next').textContent !== nextText) advanceNowLine(curText, nextText);
       if (idx !== lyricActiveIdx) {
         lyricActiveIdx = idx;
         const box = $('lyrics');

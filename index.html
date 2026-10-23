@@ -144,6 +144,12 @@
         <div id="panel-loops" class="card panel">
           <p class="hint">Sections that repeat through a single seam, verified at sample level and ranked best first.</p>
           <label class="check hidden" id="lyric-align-row"><input id="lyric-align" type="checkbox" /> Prefer loops that start on a lyric line</label>
+          <div id="loop-views" class="seg small loop-views" role="group" aria-label="Loop view">
+            <button data-loopview="list" aria-pressed="true">List</button>
+            <button data-loopview="lanes" aria-pressed="false">Lanes</button>
+            <button data-loopview="rings" aria-pressed="false">Rings</button>
+          </div>
+          <div id="loop-viz" class="loop-viz hidden"></div>
           <ol id="loops" class="loops"></ol>
         </div>
 
@@ -257,6 +263,8 @@
         </div>
       </section>
     </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden><span id="toast-text"></span><button id="toast-action" class="link"></button></div>
 
     <nav id="tabbar" class="tabbar" aria-label="Views">
       <button data-view="home" aria-current="page">

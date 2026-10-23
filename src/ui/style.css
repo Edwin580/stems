@@ -212,8 +212,12 @@ body { padding-bottom: calc(68px + env(safe-area-inset-bottom)); }
 #sec-label { font-family: var(--mono); font-size: 12px; }
 
 .now-line { display: grid; gap: 2px; width: 100%; text-align: left; margin-top: 12px; padding: 0 0 0 12px; background: none; border-left: 2px solid var(--accent); border-radius: 0; }
-#now-cur { font-weight: 600; font-size: 17px; min-height: 1.35em; letter-spacing: -0.015em; }
-#now-next { color: var(--sub); font-size: 14px; min-height: 1.3em; }
+/* Fixed height (up to two lines of the current lyric, one of the next), so a
+   line change never moves the controls below; lines sit at the bottom. */
+.now-line { height: 70px; align-content: end; overflow: hidden; }
+#now-cur { font-weight: 600; font-size: 17px; line-height: 1.35; letter-spacing: -0.015em; transform-origin: left bottom;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+#now-next { color: var(--sub); font-size: 14px; line-height: 1.3; min-height: 1.3em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .transport { display: flex; align-items: center; gap: 12px 14px; flex-wrap: wrap; margin-top: 16px; }
 .seg { display: inline-flex; background: var(--surface-2); border-radius: var(--r); padding: 3px; }
@@ -402,6 +406,8 @@ html.ios button.link { background: none; color: var(--accent); text-decoration: 
 html.ios button.ghost { background: none; color: var(--accent); min-height: 0; }
 html.ios header button { border: 0; background: none; color: var(--accent); min-height: 0; font-size: 17px; }
 html.ios button:active:not(:disabled) { opacity: 0.6; transition: none; }
+/* The lyric line is a button only to open the lyrics; it keeps its own look and fixed height. */
+html.ios .now-line { background: none; border-radius: 0; padding: 0 0 0 12px; min-height: 0; font-size: 15px; }
 /* Small buttons inside rows keep their size; 44pt everywhere would crush the mixer. */
 html.ios :is(.stem, .presets, .lyr-timing, .results) button { min-height: 0; font-size: 13px; font-weight: 500; letter-spacing: -0.08px; border-radius: 8px; }
 html.ios .stem button { padding: 6px 9px; min-width: 32px; }
@@ -462,7 +468,6 @@ html.ios :is(.lib, .loops, .results) li:not(:last-child)::after { content: ''; p
 html.ios .lib .open, html.ios .loops .meta { min-height: 0; padding: 11px 0; border-radius: 0; background: none; }
 html.ios .lib .open b, html.ios .loops .meta b { font-weight: 400; font-size: 17px; }
 html.ios .lib .open span, html.ios .loops .meta .d { font-size: 13px; }
-html.ios .lib .rm { min-height: 0; color: #ff3b30; font-size: 15px; }
 html.ios .lib .lib-play { min-height: 0; }
 html.ios .loops .meta[aria-pressed=true] { box-shadow: none; padding-left: 0; }
 html.ios .loops .q { font-size: 11px; border-radius: 6px; text-transform: none; letter-spacing: 0; }
@@ -504,3 +509,81 @@ html.native-shell .transport,
 html.native-shell #style-row { display: none !important; }
 html.native-shell body { padding-bottom: calc(var(--native-bar, 140px) + env(safe-area-inset-bottom) + 16px); }
 html.native-shell footer { padding-bottom: 0; }
+
+/* ---- Loop views (List, Lanes, Rings; src/ui/loopviz.ts) ------------------------------ */
+.loop-views { margin: 0 0 12px; }
+.loop-viz { margin: 0 0 16px; }
+.lanes-ruler { position: relative; height: 18px; font: 11px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.lanes-ruler span { position: absolute; top: 0; transform: translateX(-50%); }
+.lanes-ruler span:first-child { transform: none; }
+.lanes-ruler span:last-child { transform: translateX(-100%); }
+.lanes-track {
+  position: relative; display: grid; gap: 4px; padding: 6px 0; overflow: hidden; border-radius: 8px;
+  background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 25%), var(--surface);
+}
+.lane-row { position: relative; height: 24px; }
+.lanes .lane {
+  position: absolute; top: 0; bottom: 0; min-height: 0; padding: 0 6px; border: 0; border-radius: 6px; text-align: left;
+  font: 500 11px/24px var(--mono); letter-spacing: 0; color: var(--text); overflow: hidden;
+  background: color-mix(in srgb, var(--sub) 30%, transparent);
+}
+.lanes .lane.clean { background: color-mix(in srgb, var(--accent) 38%, transparent); }
+.lanes .lane.audible { background: color-mix(in srgb, var(--danger) 32%, transparent); }
+.lanes .lane.sel { background: var(--accent); color: var(--accent-ink); }
+.lanes-head { position: absolute; inset: 0; pointer-events: none; will-change: transform; }
+.lanes-head::before { content: ''; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: var(--playhead); }
+
+.rings { display: block; width: min(100%, 340px); margin: 0 auto; overflow: visible; }
+.ring-track { fill: none; stroke: var(--line); }
+.ring { fill: none; stroke: color-mix(in srgb, var(--sub) 70%, transparent); cursor: pointer; outline: none; transition: opacity 0.2s; }
+.ring.clean { stroke: var(--accent); }
+.ring.audible { stroke: var(--danger); }
+.rings:has(.ring.sel) .ring:not(.sel) { opacity: 0.4; }
+.ring:focus-visible { stroke: var(--text); }
+.ring-label { fill: var(--text); font: 600 12px var(--font); }
+.ring-head { transform-box: view-box; transform-origin: 0 0; will-change: transform; }
+.ring-head line { stroke: var(--playhead); stroke-width: 1.6; stroke-linecap: round; }
+
+/* Where each loop sits in the song, under its row in the list. */
+.loops .meta .span { grid-column: 1 / -1; position: relative; height: 3px; margin-top: 5px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.loops .meta .span i { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--sub); }
+.loops .meta[aria-pressed=true] .span i { background: var(--accent); }
+
+/* ---- Library rows: swipe left to delete (src/ui/swipe.ts) ------------------------------ */
+.lib li.swipe { display: block; position: relative; overflow: hidden; padding: 0; transition: height 0.25s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.2s; }
+.lib li.swipe.removing { height: 0 !important; opacity: 0; }
+.swipe .row { display: flex; align-items: center; gap: 8px; position: relative; z-index: 1; background: var(--bg); touch-action: pan-y; }
+.swipe .rm {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 88px; min-height: 0; padding: 0; border: 0; border-radius: 0;
+  display: grid; place-items: center; align-content: center; gap: 2px; background: #ff3b30; color: #fff; font-size: 13px; font-weight: 600;
+}
+.swipe .rm:focus-visible { z-index: 2; outline-offset: -3px; }
+@media (hover: hover) { .swipe .rm:hover:not(:disabled) { background: #ff3b30; color: #fff; } }
+/* Mouse and trackpad: a delete icon at the end of the row on hover instead. */
+@media (hover: hover) and (pointer: fine) {
+  .lib li.swipe { display: flex; align-items: center; }
+  .swipe .row { flex: 1; min-width: 0; background: none; }
+  .swipe .rm { position: static; width: 40px; height: 40px; border-radius: 50%; background: none; color: var(--faint); opacity: 0; transition: opacity 0.15s, color 0.15s; }
+  .swipe .rm span { display: none; }
+  .lib li.swipe:hover .rm, .swipe .rm:focus-visible { opacity: 1; }
+  .swipe .rm:hover:not(:disabled) { background: none; color: var(--danger); }
+}
+html.ios .lib li.swipe { padding: 0; }
+html.ios .swipe .row { background: var(--surface); padding-left: 16px; padding-right: 8px; }
+html.ios .lib li.swipe::after { z-index: 2; }
+@media (hover: hover) and (pointer: fine) { html.ios .swipe .row { background: none; } }
+
+/* ---- Toast (undo) ------------------------------------------------------------------------ */
+.toast {
+  position: fixed; z-index: 20; left: 50%; bottom: calc(80px + env(safe-area-inset-bottom));
+  display: flex; align-items: center; gap: 14px; max-width: calc(100% - 32px); padding: 8px 10px 8px 16px;
+  border-radius: 14px; background: var(--text); color: var(--bg); font-size: 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28); opacity: 0; transform: translate(-50%, 12px);
+  transition: opacity 0.2s, transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.toast[hidden] { display: none; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+.toast > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#toast-action { flex: none; min-height: 0; padding: 6px 8px; color: inherit; font-weight: 650; text-decoration: none; background: none; }
+html.native-shell .toast { bottom: calc(var(--native-bar, 140px) + env(safe-area-inset-bottom) + 12px); }
+@media (prefers-reduced-motion: reduce) { .toast, .lib li.swipe { transition: none; } }
