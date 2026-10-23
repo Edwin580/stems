@@ -15,12 +15,30 @@ const css = (name: string) => {
   return v;
 };
 
+/** Any CSS colour as [r, g, b], via the canvas's own colour parser. */
+const probe = document.createElement('canvas').getContext('2d')!;
+function rgb(color: string): [number, number, number] {
+  probe.fillStyle = '#000';
+  probe.fillStyle = color;
+  const c = String(probe.fillStyle);
+  if (c.startsWith('#')) return [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)) as [number, number, number];
+  const m = c.match(/[\d.]+/g) ?? ['0', '0', '0'];
+  return [+m[0], +m[1], +m[2]];
+}
+
+export type MapLayout = 'wave' | 'circle' | 'matrix' | 'bars' | 'live';
+
 /**
- * Song map in two layouts. Wave: waveform, beat grid, jump arcs above,
- * playhead. Circle (Infinite Jukebox style): beats around a ring, each a
- * tick sized by loudness, branches as curves through the middle. Static
- * content is cached in an offscreen canvas; only the playhead and live arcs
- * are redrawn each frame.
+ * Song map in five layouts:
+ * - Wave: waveform, beat grid, jump arcs above, playhead.
+ * - Circle (Infinite Jukebox style): beats around a ring, each a tick sized
+ *   by loudness, branches as curves through the middle.
+ * - Matrix: how alike every beat is to every other (repeats show as
+ *   diagonal stripes), seams as dots, the playhead as a crosshair.
+ * - Bars: one cell per bar, a row per phrase, shaded by loudness.
+ * - Live: the spectrum of what is playing now, over a song strip.
+ * Static content is cached in an offscreen canvas; only the playhead and
+ * live marks are redrawn each frame, and an unchanged frame is skipped.
  */
 export class Visualizer {
   private canvas: HTMLCanvasElement;
@@ -35,7 +53,14 @@ export class Visualizer {
   private flash: { jump: Jump; at: number } | null = null;
   private section: [number, number] | null = null;
   private dpr = 1;
-  private layout: 'wave' | 'circle' = 'wave';
+  private layout: MapLayout = 'wave';
+  private analyser: AnalyserNode | null = null;
+  private spectrum = new Uint8Array(0);
+  /** Falling peak caps over the Live bands. */
+  private caps = new Float32Array(0);
+  /** First beat of every bar (Bars layout). */
+  private barStarts: number[] = [];
+  private barCols = 8;
   /** What the last frame showed; an identical frame is skipped (a paused song redraws nothing). */
   private shown = '';
   onSeek: (sample: number) => void = () => {};
@@ -48,6 +73,18 @@ export class Visualizer {
     canvas.addEventListener('click', (e) => {
       const r = canvas.getBoundingClientRect();
       let frac = (e.clientX - r.left) / r.width;
+      if (this.analysis && this.layout === 'matrix') {
+        const sq = Math.min(r.width, r.height), x0 = (r.width - sq) / 2;
+        const beat = Math.floor(((e.clientX - r.left - x0) / sq) * this.analysis.beats.length);
+        this.onSeek(this.analysis.beats[Math.max(0, Math.min(this.analysis.beats.length - 1, beat))]);
+        return;
+      }
+      if (this.analysis && this.layout === 'bars' && this.barStarts.length) {
+        const cell = r.width / this.barCols;
+        const k = Math.floor((e.clientY - r.top) / cell) * this.barCols + Math.floor((e.clientX - r.left) / cell);
+        this.onSeek(this.analysis.beats[this.barStarts[Math.max(0, Math.min(this.barStarts.length - 1, k))]]);
+        return;
+      }
       if (this.layout === 'circle') {
         const dx = e.clientX - r.left - r.width / 2, dy = e.clientY - r.top - r.height / 2;
         frac = (((Math.atan2(dy, dx) + Math.PI / 2) / (2 * Math.PI)) % 1 + 1) % 1;
@@ -77,12 +114,14 @@ export class Visualizer {
       for (const ch of channels) for (let i = s; i < e; i += 4) m = Math.max(m, Math.abs(ch[i]));
       this.peaks[b] = m;
     }
-    this.drawStatic();
+    if (this.layout === 'bars') this.resize();
+    else this.drawStatic();
   }
 
   setAnalysis(analysis: Analysis) {
     this.analysis = analysis;
-    this.drawStatic();
+    if (this.layout === 'bars') this.resize();
+    else this.drawStatic();
   }
 
   setGraph(edges: Edge[][], core: Uint8Array, loop: LoopCandidate | null) {
@@ -94,11 +133,25 @@ export class Visualizer {
 
   flashJump(jump: Jump) { this.flash = { jump, at: performance.now() }; }
 
-  get mode(): 'wave' | 'circle' { return this.layout; }
-  setLayout(layout: 'wave' | 'circle') {
+  get mode(): MapLayout { return this.layout; }
+  setLayout(layout: MapLayout) {
     this.layout = layout;
-    this.canvas.classList.toggle('circle', layout === 'circle');
+    this.canvas.classList.toggle('circle', layout === 'circle' || layout === 'matrix');
+    this.canvas.style.height = '';
     this.resize();
+  }
+
+  /** Source for the Live layout's spectrum. */
+  setAnalyser(analyser: AnalyserNode) {
+    this.analyser = analyser;
+    this.spectrum = new Uint8Array(analyser.frequencyBinCount);
+  }
+
+  private beatAt(sample: number): number {
+    const b = this.analysis!.beats;
+    let lo = 0, hi = b.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (b[mid] <= sample) lo = mid; else hi = mid - 1; }
+    return lo;
   }
 
   // ---- Circle geometry ----
@@ -130,6 +183,16 @@ export class Visualizer {
 
   private resize() {
     this.dpr = window.devicePixelRatio || 1;
+    // Bars: as tall as its rows of square cells (the default height until the beats are known).
+    this.barStarts = [];
+    if (this.layout === 'bars' && !this.analysis && this.canvas.style.height) this.canvas.style.height = '';
+    if (this.layout === 'bars' && this.analysis) {
+      this.barStarts = barStarts(this.analysis);
+      this.barCols = this.barStarts.length > 48 ? 16 : 8;
+      const w = this.canvas.getBoundingClientRect().width;
+      const h = `${Math.ceil(this.barStarts.length / this.barCols) * (w / this.barCols)}px`;
+      if (this.canvas.style.height !== h) this.canvas.style.height = h;
+    }
     const r = this.canvas.getBoundingClientRect();
     this.canvas.width = this.layer.width = Math.max(1, Math.round(r.width * this.dpr));
     this.canvas.height = this.layer.height = Math.max(1, Math.round(r.height * this.dpr));
@@ -153,6 +216,9 @@ export class Visualizer {
     colours.clear();
     this.shown = '';
     if (this.layout === 'circle') { this.drawCircleStatic(); return; }
+    if (this.analysis && this.layout === 'matrix') { this.drawMatrixStatic(this.analysis); return; }
+    if (this.analysis && this.layout === 'bars') { this.drawBarsStatic(this.analysis); return; }
+    if (this.layout === 'live') { this.drawLiveStatic(); return; }
     const g = this.layer.getContext('2d')!;
     const W = this.layer.width, H = this.layer.height;
     g.clearRect(0, 0, W, H);
@@ -262,9 +328,10 @@ export class Visualizer {
   }
 
   /** Per-frame draw: static layer + upcoming jumps + playhead. */
-  draw(position: number, queue: readonly Jump[], lockedHeads: { pos: number; label: string }[] = []) {
+  draw(position: number, queue: readonly Jump[], lockedHeads: { pos: number; label: string }[] = [], playing = false) {
     const g = this.ctx;
     const W = this.canvas.width, H = this.canvas.height;
+    if (this.layout === 'live') { this.drawLive(position, playing); return; }
     // Playhead to the device pixel (wave) or a tenth of a degree (circle).
     const at = (s: number) => Math.round(this.layout === 'circle' ? (s / this.length) * 3600 : this.x(s));
     const key = [at(position), queue[0]?.at, queue[0]?.to, this.flash ? performance.now() : 0, ...lockedHeads.map((h) => at(h.pos))].join();
@@ -272,13 +339,15 @@ export class Visualizer {
     this.shown = key;
     g.clearRect(0, 0, W, H);
     g.drawImage(this.layer, 0, 0);
-    if (!this.analysis) {
+    if (!this.analysis || (this.layout === 'bars' && !this.barStarts.length)) {
       g.fillStyle = css('--playhead');
       g.fillRect(Math.round(this.x(position)) - this.dpr, 0, 2 * this.dpr, H);
       return;
     }
     const maxH = H * 0.45;
     if (this.layout === 'circle') { this.drawCircleLive(position, queue); return; }
+    if (this.layout === 'matrix') { this.drawMatrixLive(position, queue); return; }
+    if (this.layout === 'bars') { this.drawBarsLive(this.analysis, position, queue); return; }
     if (this.section) {
       g.fillStyle = css('--bg');
       g.globalAlpha = 0.7;
@@ -369,4 +438,244 @@ export class Visualizer {
     g.fillStyle = css('--accent');
     g.beginPath(); g.arc(px, py, 3.5 * d, 0, 2 * Math.PI); g.fill();
   }
+
+  // ---- Matrix -------------------------------------------------------------------
+
+  private get square() {
+    const W = this.canvas.width, H = this.canvas.height, sq = Math.min(W, H);
+    return { x0: (W - sq) / 2, sq };
+  }
+  private cellOf(beat: number) {
+    const { x0, sq } = this.square;
+    return x0 + ((beat + 0.5) / this.analysis!.beats.length) * sq;
+  }
+
+  private drawMatrixStatic(a: Analysis) {
+    const g = this.layer.getContext('2d')!;
+    const W = this.layer.width, H = this.layer.height;
+    g.clearRect(0, 0, W, H);
+    const n = a.beats.length, N = Math.min(n, 360);
+    // Contrast from the spread of distances (10th to 60th percentile).
+    const sample: number[] = [];
+    for (let k = 0; k < n * n; k += Math.max(1, Math.floor((n * n) / 4000))) {
+      const v = a.distances[k];
+      if (Number.isFinite(v) && k % (n + 1) !== 0) sample.push(v);
+    }
+    sample.sort((p, q) => p - q);
+    const lo = sample[Math.floor(sample.length * 0.1)] ?? 0, hi = sample[Math.floor(sample.length * 0.6)] ?? 1;
+    const [br, bg, bb] = rgb(css('--bg')), [wr, wg, wb] = rgb(css('--wave'));
+    const img = new ImageData(N, N);
+    for (let i = 0; i < N; i++) {
+      const bi = Math.floor((i * n) / N);
+      for (let j = 0; j < N; j++) {
+        const d = a.distances[bi * n + Math.floor((j * n) / N)];
+        const t = Number.isFinite(d) ? Math.max(0, Math.min(1, 1 - (d - lo) / (hi - lo || 1))) : 0;
+        // Alike beats glow toward the wave colour; the accent is kept for seams.
+        const v = t * t * 0.85;
+        const o = (i * N + j) * 4;
+        img.data[o] = br + (wr - br) * v;
+        img.data[o + 1] = bg + (wg - bg) * v;
+        img.data[o + 2] = bb + (wb - bb) * v;
+        img.data[o + 3] = 255;
+      }
+    }
+    const tmp = document.createElement('canvas');
+    tmp.width = tmp.height = N;
+    tmp.getContext('2d')!.putImageData(img, 0, 0);
+    const { x0, sq } = this.square;
+    g.imageSmoothingEnabled = N < sq;
+    g.drawImage(tmp, x0, 0, sq, sq);
+    // The best seams the player may take: dots at (where it lands, where it leaves).
+    g.fillStyle = css('--accent');
+    const r = Math.max(1.5 * this.dpr, (sq / n) * 0.7);
+    for (const e of this.edges.flat().sort((p, q) => p.cost - q.cost).slice(0, 300)) {
+      g.globalAlpha = 0.35 + 0.55 * Math.max(0, Math.min(1, 1 - e.cost / 0.6));
+      g.fillRect(this.cellOf(e.to) - r / 2, this.cellOf(e.from + 1) - r / 2, r, r);
+    }
+    g.globalAlpha = 1;
+    if (this.loop) {
+      g.strokeStyle = css('--accent');
+      g.lineWidth = 2 * this.dpr;
+      g.beginPath(); g.arc(this.cellOf(this.loop.startBeat), this.cellOf(this.loop.endBeat), 7 * this.dpr, 0, 2 * Math.PI); g.stroke();
+    }
+  }
+
+  private drawMatrixLive(position: number, queue: readonly Jump[]) {
+    const g = this.ctx, d = this.dpr;
+    const { x0, sq } = this.square;
+    const b = this.beatAt(position), c = this.cellOf(b);
+    if (this.section) {
+      const s0 = this.cellOf(this.beatAt(this.section[0])), s1 = this.cellOf(this.beatAt(this.section[1]));
+      g.strokeStyle = css('--accent');
+      g.lineWidth = d;
+      g.strokeRect(s0, s0, s1 - s0, s1 - s0);
+    }
+    // Crosshair on the current beat.
+    g.fillStyle = css('--playhead');
+    g.globalAlpha = 0.35;
+    g.fillRect(Math.round(c) - d / 2, 0, d, sq);
+    g.fillRect(x0, Math.round(c) - d / 2, sq, d);
+    g.globalAlpha = 1;
+    const next = queue[0];
+    if (next) {
+      // Where the next jump leaves (row) and lands (column).
+      const nx = this.cellOf(this.beatAt(next.to)), ny = this.cellOf(this.beatAt(next.at));
+      g.strokeStyle = css('--accent');
+      g.lineWidth = 2 * d;
+      g.setLineDash([4 * d, 3 * d]);
+      g.beginPath(); g.moveTo(c, c); g.lineTo(c, ny); g.lineTo(nx, ny); g.stroke();
+      g.setLineDash([]);
+      g.beginPath(); g.arc(nx, ny, 5 * d, 0, 2 * Math.PI); g.stroke();
+    }
+    g.fillStyle = css('--playhead');
+    g.beginPath(); g.arc(c, c, 4 * d, 0, 2 * Math.PI); g.fill();
+  }
+
+  // ---- Bars ---------------------------------------------------------------------
+
+  private barRect(k: number) {
+    const cell = this.canvas.width / this.barCols, gap = Math.max(1, cell * 0.08);
+    return { x: (k % this.barCols) * cell + gap / 2, y: Math.floor(k / this.barCols) * cell + gap / 2, s: cell - gap };
+  }
+
+  private drawBarsStatic(a: Analysis) {
+    const g = this.layer.getContext('2d')!;
+    g.clearRect(0, 0, this.layer.width, this.layer.height);
+    const starts = this.barStarts, n = a.beats.length;
+    const loud = starts.map((s, k) => {
+      const e = starts[k + 1] ?? n;
+      let sum = 0;
+      for (let i = s; i < e; i++) sum += a.beatLoudness[i] ?? -60;
+      return sum / Math.max(1, e - s);
+    });
+    const lo = Math.min(...loud), hi = Math.max(...loud);
+    const wave = css('--wave'), dim = css('--muted-wave'), accent = css('--accent');
+    const coreFirst = this.core.indexOf(1), coreLast = this.core.lastIndexOf(1);
+    const radius = Math.max(2, this.barRect(0).s * 0.18);
+    starts.forEach((s, k) => {
+      const { x, y, s: size } = this.barRect(k);
+      const inCore = coreFirst < 0 || (s >= coreFirst && s <= coreLast);
+      g.fillStyle = inCore ? wave : dim;
+      g.globalAlpha = 0.14 + 0.62 * ((loud[k] - lo) / (hi - lo || 1));
+      g.beginPath(); g.roundRect(x, y, size, size, radius); g.fill();
+      // Phrase starts get an accent notch.
+      if ((a.phrase[s] ?? 0) > 0.6) {
+        g.globalAlpha = 0.9;
+        g.fillStyle = accent;
+        g.fillRect(x, y + size * 0.2, Math.max(2, size * 0.08), size * 0.6);
+      }
+    });
+    g.globalAlpha = 1;
+    if (this.loop) {
+      g.strokeStyle = accent;
+      g.lineWidth = 1.5 * this.dpr;
+      starts.forEach((s, k) => {
+        if (s < this.loop!.startBeat || s >= this.loop!.endBeat) return;
+        const { x, y, s: size } = this.barRect(k);
+        g.beginPath(); g.roundRect(x, y, size, size, radius); g.stroke();
+      });
+    }
+  }
+
+  private barOf(beat: number) {
+    let k = 0;
+    while (k + 1 < this.barStarts.length && this.barStarts[k + 1] <= beat) k++;
+    return k;
+  }
+
+  private drawBarsLive(a: Analysis, position: number, queue: readonly Jump[]) {
+    const g = this.ctx, d = this.dpr;
+    const beat = this.beatAt(position), k = this.barOf(beat);
+    const { x, y, s } = this.barRect(k);
+    const radius = Math.max(2, s * 0.18);
+    const next = queue[0];
+    if (next) {
+      const t = this.barRect(this.barOf(this.beatAt(next.to)));
+      g.strokeStyle = css('--accent');
+      g.lineWidth = 2 * d;
+      g.setLineDash([3 * d, 3 * d]);
+      g.beginPath(); g.roundRect(t.x, t.y, t.s, t.s, radius); g.stroke();
+      g.setLineDash([]);
+    }
+    // Current bar, with how far through it the music is.
+    const s0 = a.beats[this.barStarts[k]], s1 = a.beats[this.barStarts[k + 1] ?? a.beats.length - 1] ?? this.length;
+    const f = Math.max(0, Math.min(1, (position - s0) / Math.max(1, s1 - s0)));
+    g.fillStyle = css('--accent');
+    g.fillRect(x + 2 * d, y + s - 4 * d, (s - 4 * d) * f, 2 * d);
+    g.strokeStyle = css('--playhead');
+    g.lineWidth = 2 * d;
+    g.beginPath(); g.roundRect(x, y, s, s, radius); g.stroke();
+  }
+
+  // ---- Live -----------------------------------------------------------------------
+
+  private get stripH() { return 18 * this.dpr; }
+
+  private drawLiveStatic() {
+    const g = this.layer.getContext('2d')!;
+    const W = this.layer.width, H = this.layer.height, sh = this.stripH;
+    g.clearRect(0, 0, W, H);
+    // The song as a thin strip along the bottom, for position and seeking.
+    g.fillStyle = css('--muted-wave');
+    for (let px = 0; px < W; px++) {
+      const p = this.peaks[Math.min(this.peaks.length - 1, Math.floor((px / W) * this.peaks.length))] ?? 0;
+      const h = Math.max(this.dpr, p * sh * 0.9);
+      g.fillRect(px, H - sh / 2 - h / 2, 1, h);
+    }
+  }
+
+  private drawLive(position: number, playing: boolean) {
+    const g = this.ctx, d = this.dpr;
+    const W = this.canvas.width, H = this.canvas.height, sh = this.stripH;
+    const bands = Math.max(24, Math.min(64, Math.floor(W / (9 * d))));
+    if (this.caps.length !== bands) this.caps = new Float32Array(bands);
+    const an = this.analyser;
+    if (an && playing) an.getByteFrequencyData(this.spectrum);
+    else this.spectrum.fill(0);
+    let moving = false;
+    const levels = new Float32Array(bands);
+    if (an) {
+      // Log-spaced bands from 40 Hz to 16 kHz.
+      const nyq = an.context.sampleRate / 2, bins = this.spectrum.length;
+      for (let k = 0; k < bands; k++) {
+        const f0 = 40 * Math.pow(400, k / bands), f1 = 40 * Math.pow(400, (k + 1) / bands);
+        const i0 = Math.floor((f0 / nyq) * bins), i1 = Math.max(i0 + 1, Math.ceil((f1 / nyq) * bins));
+        let m = 0;
+        for (let i = i0; i < i1 && i < bins; i++) m = Math.max(m, this.spectrum[i]);
+        levels[k] = Math.pow(m / 255, 1.6);
+        this.caps[k] = Math.max(levels[k], this.caps[k] - 0.012);
+        if (this.caps[k] > 0 || levels[k] > 0) moving = true;
+      }
+    }
+    const key = `live|${Math.round(this.x(position))}|${moving ? performance.now() : 0}`;
+    if (key === this.shown) return;
+    this.shown = key;
+    g.clearRect(0, 0, W, H);
+    g.drawImage(this.layer, 0, 0);
+    const top = 6 * d, bottom = H - sh - 8 * d, span = bottom - top;
+    const slot = W / bands, bw = Math.max(2 * d, slot * 0.62);
+    const wave = css('--wave'), accent = css('--accent');
+    for (let k = 0; k < bands; k++) {
+      const h = Math.max(2 * d, levels[k] * span), x = k * slot + (slot - bw) / 2;
+      g.fillStyle = levels[k] > 0.55 ? accent : wave;
+      g.globalAlpha = 0.35 + 0.65 * levels[k];
+      g.beginPath(); g.roundRect(x, bottom - h, bw, h, bw / 2); g.fill();
+      // Peak cap.
+      g.globalAlpha = 0.8;
+      g.fillStyle = accent;
+      g.fillRect(x, bottom - this.caps[k] * span - 3 * d, bw, 2 * d);
+    }
+    g.globalAlpha = 1;
+    g.fillStyle = css('--playhead');
+    g.fillRect(Math.round(this.x(position)) - d, H - sh, 2 * d, sh);
+  }
+}
+
+/** First beat of every bar: downbeats, plus beat 0 when the song starts on a pickup. */
+function barStarts(a: Analysis): number[] {
+  const m = a.meter.beatsPerBar, out: number[] = [];
+  for (let i = 0; i < a.beats.length - 1; i++) {
+    if ((((i - a.meter.phase) % m) + m) % m === 0 || i === 0) out.push(i);
+  }
+  return out;
 }

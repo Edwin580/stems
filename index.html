@@ -75,8 +75,11 @@
           <div class="viz-wrap">
             <canvas id="viz" aria-label="Song map with beats and jump branches. Tap to seek."></canvas>
             <div class="seg small viz-layout" role="group" aria-label="Song map layout">
-              <button data-layout="wave" aria-pressed="true">Wave</button>
-              <button data-layout="circle" aria-pressed="false">Circle</button>
+              <button data-layout="wave" aria-pressed="true" title="Waveform with jump arcs">Wave</button>
+              <button data-layout="circle" aria-pressed="false" title="Beats around a ring, jumps through the middle">Circle</button>
+              <button data-layout="matrix" aria-pressed="false" title="How alike every beat is to every other; repeats show as diagonal stripes">Matrix</button>
+              <button data-layout="bars" aria-pressed="false" title="One cell per bar, shaded by loudness">Bars</button>
+              <button data-layout="live" aria-pressed="false" title="Live spectrum of what is playing">Live</button>
             </div>
           </div>
           <div id="section" class="section hidden">

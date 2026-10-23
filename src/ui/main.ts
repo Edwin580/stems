@@ -17,7 +17,7 @@ import { searchLyrics, songInfo, type LyricsResult, type SongInfo } from '../lyr
 import { ensureIsolationState, setIsolation } from './isolation';
 import { LoopViz, type LoopView } from './loopviz';
 import { swipeToDelete } from './swipe';
-import { Visualizer } from './visualizer';
+import { Visualizer, type MapLayout } from './visualizer';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const fmt = (sec: number) => {
@@ -35,13 +35,14 @@ let song: SongInfo = { title: '', artist: '' };
 let tab: Tab = 'loops';
 let pendingShare: ShareState | null = decodeShare(location.hash);
 const viz = new Visualizer($<HTMLCanvasElement>('viz'));
-function setLayout(l: 'wave' | 'circle') {
+const LAYOUTS: MapLayout[] = ['wave', 'circle', 'matrix', 'bars', 'live'];
+function setLayout(l: MapLayout) {
   try { localStorage.setItem('stems.layout', l); } catch { /* ignore */ }
   document.querySelectorAll<HTMLButtonElement>('[data-layout]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.layout === l)));
   viz.setLayout(l);
 }
-document.querySelectorAll<HTMLButtonElement>('[data-layout]').forEach((b) => b.addEventListener('click', () => setLayout(b.dataset.layout as 'wave' | 'circle')));
-setLayout((() => { try { return localStorage.getItem('stems.layout') === 'circle' ? 'circle' : 'wave'; } catch { return 'wave'; } })());
+document.querySelectorAll<HTMLButtonElement>('[data-layout]').forEach((b) => b.addEventListener('click', () => setLayout(b.dataset.layout as MapLayout)));
+setLayout((() => { try { const l = localStorage.getItem('stems.layout') as MapLayout; return LAYOUTS.includes(l) ? l : 'wave'; } catch { return 'wave'; } })());
 
 function show(id: string, on = true) { $(id).classList.toggle('hidden', !on); }
 const trackName = () => [song.artist, song.title].filter(Boolean).join(' - ') || 'stems';
@@ -92,6 +93,7 @@ async function ensurePlayer(): Promise<Player> {
     onSleep: () => { $<HTMLSelectElement>('sleep').value = '0'; updatePlayButton(); },
   };
   viz.onSeek = (s) => player?.seek(s);
+  viz.setAnalyser(player.analyser);
   return player;
 }
 
@@ -1255,6 +1257,9 @@ function advanceNowLine(cur: string, next: string) {
   const rising = !!cur && cur === nextEl.textContent;
   curEl.textContent = cur;
   nextEl.textContent = next;
+  // Shrink a long line to fit on one line (down to 13px, then it ellipsizes).
+  curEl.style.fontSize = '';
+  if (cur && curEl.scrollWidth > curEl.clientWidth) curEl.style.fontSize = `${Math.max(13, Math.floor((17 * curEl.clientWidth) / curEl.scrollWidth))}px`;
   if (!rising || reducedMotion.matches) return;
   curEl.animate([{ transform: 'translateY(1.1em) scale(0.84)', opacity: 0.45 }, { transform: 'none', opacity: 1 }], { duration: 360, easing: EASE });
   nextEl.animate([{ transform: 'translateY(0.7em)', opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 360, delay: 90, easing: EASE, fill: 'backwards' });
@@ -1274,7 +1279,7 @@ function frame() {
     const heads = p.stems
       ? p.stems.names.map((n, i) => ({ n, i })).filter(({ i }) => p.locked[i]).map(({ n, i }) => ({ pos: p.stemPositions[i] ?? 0, label: n }))
       : [];
-    viz.draw(pos, p.queue, heads);
+    viz.draw(pos, p.queue, heads, p.playing);
     setText('listened', fmt(p.listenedSec));
     setText('posn', fmt(pos / p.source.sampleRate));
     setText('jumps', String(p.jumpCount));

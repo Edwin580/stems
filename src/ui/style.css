@@ -187,9 +187,11 @@ body { padding-bottom: calc(68px + env(safe-area-inset-bottom)); }
 .aprog { margin: 4px 0 14px; }
 #viz { width: 100%; height: 168px; display: block; cursor: pointer; touch-action: manipulation; }
 #viz.circle { height: min(calc(100vw - 32px), 460px); }
-.viz-wrap { position: relative; }
-.viz-layout { position: absolute; top: 0; right: 0; opacity: 0.9; }
-.viz-layout button { padding: 4px 10px; font-size: 12px; }
+.viz-wrap { display: flex; flex-direction: column; }
+/* The layout switch sits above the map (five choices no longer fit over it). */
+.viz-layout { order: -1; align-self: flex-end; max-width: 100%; overflow-x: auto; scrollbar-width: none; margin-bottom: 8px; }
+.viz-layout::-webkit-scrollbar { display: none; }
+.viz-layout button { flex: none; padding: 4px 10px; font-size: 12px; }
 
 /* Section handles: two range inputs on one track, widened by half a thumb on
    each side so a thumb's centre lines up with the same moment on the map. */
@@ -210,14 +212,15 @@ body { padding-bottom: calc(68px + env(safe-area-inset-bottom)); }
 .section-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 26px; }
 #sec-label { font-family: var(--mono); font-size: 12px; }
 
-/* Fixed height (up to two lines of the current lyric, one of the next), so a
-   line change never moves the controls below; lines sit at the bottom. */
+/* Two fixed single lines (the current lyric, then the next), so a line change
+   never moves the controls below and a short line leaves no gap; a long
+   current line is shrunk to fit (advanceNowLine in main.ts). */
 .now-line {
-  display: grid; gap: 2px; width: 100%; height: 70px; align-content: end; overflow: hidden; text-align: left;
+  display: grid; gap: 2px; width: 100%; overflow: hidden; text-align: left;
   margin-top: 12px; padding: 0 0 0 12px; background: none; border-left: 2px solid var(--accent); border-radius: 0;
 }
-#now-cur { font-weight: 600; font-size: 17px; line-height: 1.35; letter-spacing: -0.015em; transform-origin: left bottom;
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+#now-cur { font-weight: 600; font-size: 17px; line-height: 23px; height: 23px; letter-spacing: -0.015em; transform-origin: left bottom;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #now-next { color: var(--sub); font-size: 14px; line-height: 1.3; min-height: 1.3em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .transport { display: flex; align-items: center; gap: 12px 14px; flex-wrap: wrap; margin-top: 16px; }
