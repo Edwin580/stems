@@ -53,17 +53,13 @@ export class WasmFFT implements FFTLike {
   }
 }
 
-let forceJs = false;
-/** For tests/benchmarks: disable the WASM path. */
-export function setForceJsFFT(on: boolean) { forceJs = on; }
-
 /** Best available FFT for this size: WASM SIMD when supported, else JS. */
 export function createFFT(size: number): FFTLike {
-  const mod = forceJs ? null : wasmModule();
+  const mod = wasmModule();
   if (mod) {
     try { return new WasmFFT(size, mod); } catch { /* fall through */ }
   }
   return new FFT(size);
 }
 
-export function wasmFFTAvailable(): boolean { return !forceJs && wasmModule() !== null; }
+export function wasmFFTAvailable(): boolean { return wasmModule() !== null; }

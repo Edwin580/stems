@@ -9,8 +9,6 @@
 type Handler = { postMessage(body: string): void };
 const handler = (window as Window & { webkit?: { messageHandlers?: { stemsNative?: Handler } } }).webkit?.messageHandlers?.stemsNative;
 
-export const inNativeShell = !!handler;
-
 export type NativeCommand =
   | { type: 'toggle' }
   | { type: 'mode'; value: 'endless' | 'loop' }
