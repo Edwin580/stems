@@ -56,6 +56,8 @@ export class Player {
   readonly ctx: AudioContext;
   private node!: AudioWorkletNode;
   private master!: GainNode;
+  /** Taps the output for the Live song map (a spectrum; it changes nothing it hears). */
+  analyser!: AnalyserNode;
   private out!: BackgroundOutput;
   source: AudioSource | null = null;
   analysis: Analysis | null = null;
@@ -96,6 +98,10 @@ export class Player {
     p.node = new AudioWorkletNode(ctx, 'stems-splicer', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
     p.master = ctx.createGain();
     p.node.connect(p.master);
+    p.analyser = ctx.createAnalyser();
+    p.analyser.fftSize = 2048;
+    p.analyser.smoothingTimeConstant = 0.78;
+    p.master.connect(p.analyser);
     p.out = new BackgroundOutput(ctx, p.master);
     p.node.port.onmessage = (e: MessageEvent<FromWorklet>) => p.onWorklet(e.data);
     return p;
