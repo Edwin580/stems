@@ -222,7 +222,8 @@ body { padding-bottom: calc(68px + env(safe-area-inset-bottom)); }
 .mode-hint { color: var(--sub); font-size: 14px; margin: 14px 0 10px; min-height: 1.5em; max-width: 60ch; }
 .clock { display: flex; align-items: center; gap: 6px 20px; flex-wrap: wrap; font-size: 13px; color: var(--text); padding-top: 12px; border-top: 1px solid var(--line); }
 .clock .k { color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; margin-right: 4px; }
-.sleep { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.transport-opts { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.sleep { display: flex; align-items: center; gap: 6px; }
 .sleep .k { color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; font-family: var(--mono); }
 .sleep select { font-family: var(--mono); font-size: 12px; padding: 5px 24px 5px 8px; background-color: transparent; }
 .sleep-left { margin-left: auto; color: var(--accent); font-size: 12px; }

@@ -10,6 +10,7 @@ Pick a song and it plays forever. stems is an infinite jukebox built so you can'
   - You can mute or solo stems, or use the instrumental and a cappella presets.
   - You can **lock** a stem to a loop while the rest of the song wanders.
 - **Lyrics:** finds synced lyrics for the song on [LRCLIB](https://lrclib.net) (or load a `.lrc` file). They highlight in time with what you hear (output latency is compensated, and a timing nudge handles files cut to a different master), tapping a line jumps there, jumps are kept between sung lines, and loops can be ranked to start on a lyric line.
+- **8D audio:** the music circles slowly around your head (Slow, Medium or Fast), using an HRTF panner with a touch of room reverb. It's best on headphones. The motion runs on the audio clock, so it keeps going in the background. It applies to what you hear, not to exports.
 - **Background playback:** the engine's output plays through a media element, so it keeps going with the screen locked or in another tab, with lock-screen and headphone controls. Jumps are planned well ahead in the AudioWorklet, so a throttled page doesn't interrupt the music.
 - **Library:** songs you open are kept on the device (IndexedDB), searchable by title, artist or file name, and reopen without picking the file again. Add several files at once, paste a direct link to an audio file (hosts that allow cross-site downloads, such as Internet Archive or Dropbox direct links), or, with the app installed on Android, share audio to stems from any app's Share menu.
 - **Extras:**

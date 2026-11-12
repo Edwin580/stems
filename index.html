@@ -91,16 +91,27 @@
               <button data-mode="endless" aria-pressed="true">Endless</button>
               <button data-mode="loop" aria-pressed="false">Loop</button>
             </div>
-            <label class="sleep">
-              <span class="k">Sleep</span>
-              <select id="sleep" aria-label="Sleep timer">
-                <option value="0">Off</option>
-                <option value="15">15m</option>
-                <option value="30">30m</option>
-                <option value="60">60m</option>
-                <option value="90">90m</option>
-              </select>
-            </label>
+            <div class="transport-opts">
+              <label class="sleep">
+                <span class="k">Sleep</span>
+                <select id="sleep" aria-label="Sleep timer">
+                  <option value="0">Off</option>
+                  <option value="15">15m</option>
+                  <option value="30">30m</option>
+                  <option value="60">60m</option>
+                  <option value="90">90m</option>
+                </select>
+              </label>
+              <label class="sleep eightd" title="8D audio: the music circles around your head. Best on headphones.">
+                <span class="k">8D</span>
+                <select id="eightd" aria-label="8D audio">
+                  <option value="off">Off</option>
+                  <option value="slow">Slow</option>
+                  <option value="medium">Medium</option>
+                  <option value="fast">Fast</option>
+                </select>
+              </label>
+            </div>
           </div>
           <div id="style-row" class="style-row">
             <span class="k">Style</span>
