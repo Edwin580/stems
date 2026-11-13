@@ -48,8 +48,3 @@ export function lineAt(lines: LyricLine[], seconds: number): number {
   }
   return ans;
 }
-
-/** Lyric line start times in samples, for aligning loop points to the grid. */
-export function lyricStartsInSamples(lines: LyricLine[], sampleRate: number): number[] {
-  return lines.map((l) => Math.round(l.time * sampleRate));
-}
