@@ -5,6 +5,7 @@ import { clearCache, getLyricSearch, getSongLyrics, putLyricSearch, putSongLyric
 import { addSong, fetchAudioFile, listSongs, matchSongs, removeSong, songFile, takeSharedFiles, updateSong, type LibrarySong } from '../audio/library';
 import { encodeMp3InWorker } from '../audio/mp3-client';
 import { DEFAULT_MODEL_URL, Player, sharedMemory } from '../audio/player';
+import type { Spatial8DSpeed } from '../audio/spatial';
 import { synthSong } from '../engine/demo';
 import type { LoopCandidate } from '../engine/loops';
 import { encodeWav } from '../engine/render';
@@ -94,6 +95,8 @@ async function ensurePlayer(): Promise<Player> {
   };
   viz.onSeek = (s) => player?.seek(s);
   viz.setAnalyser(player.analyser);
+  if (player.supports8D) apply8D();
+  else eightdSelect.closest('label')?.classList.add('hidden');
   return player;
 }
 
@@ -1004,6 +1007,16 @@ document.addEventListener('keydown', (e) => {
 });
 
 $<HTMLSelectElement>('sleep').addEventListener('change', (e) => player?.setSleep(Number((e.target as HTMLSelectElement).value)));
+
+/** 8D audio (persisted): the mix circles around the listener. */
+const eightdSelect = $<HTMLSelectElement>('eightd');
+try { eightdSelect.value = localStorage.getItem('stems.8d') || 'off'; } catch { /* default off */ }
+if (!eightdSelect.value) eightdSelect.value = 'off';
+function apply8D() { player?.set8D(eightdSelect.value as Spatial8DSpeed); }
+eightdSelect.addEventListener('change', () => {
+  try { localStorage.setItem('stems.8d', eightdSelect.value); } catch { /* ignore */ }
+  apply8D();
+});
 
 function updateMediaSession() {
   if (!('mediaSession' in navigator)) return;

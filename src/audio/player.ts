@@ -9,6 +9,7 @@ import type { Jump } from '../engine/splicer';
 import type { FromAnalysis } from './analysis.worker';
 import { BackgroundOutput } from './background';
 import * as cache from './cache';
+import { Spatial8D, type Spatial8DSpeed } from './spatial';
 import { isBackendInitError } from './ort-fallback';
 import type { FromSeparation, ToSeparation } from './separation.worker';
 import type { FromWorklet, ToWorklet } from './worklet';
@@ -59,6 +60,7 @@ export class Player {
   /** Taps the output for the Live song map (a spectrum; it changes nothing it hears). */
   analyser!: AnalyserNode;
   private out!: BackgroundOutput;
+  private spatial!: Spatial8D;
   source: AudioSource | null = null;
   analysis: Analysis | null = null;
   planner: Planner | null = null;
@@ -97,12 +99,14 @@ export class Player {
     await ctx.audioWorklet.addModule(workletUrl);
     p.node = new AudioWorkletNode(ctx, 'stems-splicer', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
     p.master = ctx.createGain();
-    p.node.connect(p.master);
+    p.spatial = new Spatial8D(ctx);
+    p.node.connect(p.master).connect(p.spatial.input);
+    // The Live map shows what is heard, so it taps the output after the 8D stage.
     p.analyser = ctx.createAnalyser();
     p.analyser.fftSize = 2048;
     p.analyser.smoothingTimeConstant = 0.78;
-    p.master.connect(p.analyser);
-    p.out = new BackgroundOutput(ctx, p.master);
+    p.spatial.output.connect(p.analyser);
+    p.out = new BackgroundOutput(ctx, p.spatial.output);
     p.node.port.onmessage = (e: MessageEvent<FromWorklet>) => p.onWorklet(e.data);
     return p;
   }
@@ -539,6 +543,11 @@ export class Player {
     this.locked[index] = false;
     this.send({ type: 'unlock', index });
   }
+
+  /** 8D audio: the mix circles around the listener (live output only, not exports). */
+  set8D(speed: Spatial8DSpeed) { this.spatial.set(speed); }
+  get spatial8D(): Spatial8DSpeed { return this.spatial.current; }
+  get supports8D(): boolean { return Spatial8D.supported(this.ctx); }
 
   // ---- Sleep timer ------------------------------------------------------------
 
