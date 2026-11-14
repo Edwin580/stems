@@ -1,0 +1,3 @@
+# Cross-origin isolation is opt-in ("multi-threaded mode" in the app): the
+# service worker adds COOP/COEP only when the user enables it, because those
+# headers block third-party players (YouTube, Spotify). Don't set them here.
